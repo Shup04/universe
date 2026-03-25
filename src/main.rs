@@ -54,19 +54,23 @@ pub fn step(&mut self) {
                 let mut next_u = (2.0 * curr[0]) - prev[0] + (wave_speed * lap_u);
                 let mut next_v = (2.0 * curr[1]) - prev[1] + (wave_speed * lap_v);
 
+                // THE SINE-GORDON LATCH
+                // This forces the "Time Needles" to want to lock into specific angles.
+                // 0.05 is the "Hardness" of the particle.
+                let latch_strength = 0.05;
+                next_u -= curr[0].sin() * latch_strength;
+                next_v -= (curr[1] - 1.0).sin() * latch_strength; // Pulls V toward 1.0 (North)
+
                 let potential_u = (0.0 - next_u) * 0.004;
                 let potential_v = (1.0 - next_v) * 0.004;
 
                 next_u += potential_u;
                 next_v += potential_v;
 
-                // RELATIVITY FIX: Normalize the vector
-                // This ensures the "Time Needle" always has a length of 1.0. 
-                // It can rotate, but it cannot grow or shrink.
+                // Normalize to keep the needle length constant
                 let mag = (next_u * next_u + next_v * next_v).sqrt();
                 if mag > 0.0 {
-                    next_u /= mag;
-                    next_v /= mag;
+                    next_u /= mag; next_v /= mag;
                 }
 
                 next[idx] = [next_u, next_v];
