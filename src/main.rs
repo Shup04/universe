@@ -1,8 +1,10 @@
-use rand::Rng;
 use minifb::{Key, Window, WindowOptions};
 
-const WIDTH: usize = 400;
-const HEIGHT: usize = 400;
+const SIM_WIDTH: usize = 200;
+const SIM_HEIGHT: usize = 200;
+const SCALE: usize = 4;
+const WINDOW_WIDTH: usize = SIM_WIDTH * SCALE;
+const WINDOW_HEIGHT: usize = SIM_HEIGHT * SCALE;
 
 pub struct Universe {
     width: usize,
@@ -47,9 +49,16 @@ pub fn step(&mut self) {
                 let lap_u = up[0] + down[0] + left[0] + right[0] - (4.0 * curr[0]);
                 let lap_v = up[1] + down[1] + left[1] + right[1] - (4.0 * curr[1]);
 
+
                 // Update each component
                 let mut next_u = (2.0 * curr[0]) - prev[0] + (wave_speed * lap_u);
                 let mut next_v = (2.0 * curr[1]) - prev[1] + (wave_speed * lap_v);
+
+                let potential_u = (0.0 - next_u) * 0.004;
+                let potential_v = (1.0 - next_v) * 0.004;
+
+                next_u += potential_u;
+                next_v += potential_v;
 
                 // RELATIVITY FIX: Normalize the vector
                 // This ensures the "Time Needle" always has a length of 1.0. 
@@ -82,22 +91,19 @@ fn phase_to_color(vec: [f32; 2]) -> u32 {
 }
 
 fn main() {
-    let mut universe = Universe::new(WIDTH, HEIGHT);
-    
-    // The buffer that minifb will draw to the screen
-    let mut buffer: Vec<u32> = vec![0; WIDTH * HEIGHT];
+    let mut universe = Universe::new(SIM_WIDTH, SIM_HEIGHT);
+    let mut buffer: Vec<u32> = vec![0; WINDOW_WIDTH * WINDOW_HEIGHT];
 
     let mut window = Window::new(
         "Now Wave Simulator - Sandbox Mode",
-        WIDTH,
-        HEIGHT,
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
         WindowOptions::default(),
     ).unwrap_or_else(|e| {
         panic!("{}", e);
     });
 
-    // Limit to ~60 FPS so it doesn't instantly run billions of years in a millisecond
-    window.limit_update_rate(Some(std::time::Duration::from_micros(166)));//16600
+    window.set_target_fps(60);
 
     let mut was_mouse_down = false;
 
@@ -106,41 +112,56 @@ fn main() {
         let is_mouse_down = window.get_mouse_down(minifb::MouseButton::Left);
 
         // ONLY fire on the exact frame the mouse is clicked
-        if is_mouse_down && !was_mouse_down {
+         if is_mouse_down && !was_mouse_down {
             if let Some((mouse_x, mouse_y)) = window.get_mouse_pos(minifb::MouseMode::Discard) {
-                let center_x = mouse_x as isize;
-                let center_y = mouse_y as isize;
-                
-                let radius = 8; // Slightly wider base for stability
-                
-                for dy in -radius..=radius {
-                    for dx in -radius..=radius {
-                        if dx * dx + dy * dy <= radius * radius {
-                            let x_idx = (center_x + dx).rem_euclid(WIDTH as isize) as usize;
-                            let y_idx = (center_y + dy).rem_euclid(HEIGHT as isize) as usize;
-                            let idx = y_idx * WIDTH + x_idx;
+                let center_x = (mouse_x as usize / SCALE) as isize;
+                let center_y = (mouse_y as usize / SCALE) as isize;
+                let radius = 40.0_f32;
+                let core_scale = 22.0_f32;
 
-                            // Calculate the vector pointing AWAY from the mouse
-                            let mut u = dx as f32;
-                            let mut v = dy as f32;
-                            
-                            // Normalize it
-                            let mag = (u*u + v*v).sqrt();
-                            if mag > 0.0 {
-                                u /= mag; v /= mag;
+                for dy in -(radius as isize)..=(radius as isize) {
+                    for dx in -(radius as isize)..=(radius as isize) {
+                        let r2 = (dx * dx + dy * dy) as f32;
+                        if r2 <= radius * radius {
+                            let x_idx = (center_x + dx).rem_euclid(SIM_WIDTH as isize) as usize;
+                            let y_idx = (center_y + dy).rem_euclid(SIM_HEIGHT as isize) as usize;
+                            let idx = y_idx * SIM_WIDTH + x_idx;
+
+                            let r = r2.sqrt();
+
+                            // Tangential swirl direction
+                            let mut tu = -(dy as f32);
+                            let mut tv = dx as f32;
+                            let tmag = (tu * tu + tv * tv).sqrt();
+
+                            if tmag > 0.0 {
+                                tu /= tmag;
+                                tv /= tmag;
                             } else {
-                                u = 0.0; v = 1.0;
+                                tu = 0.0;
+                                tv = 1.0;
                             }
 
-                            // Set the grid to this "Swirl" pattern
+                            // Strength fades with radius
+                            let twist = (-(r * r) / (2.0 * core_scale * core_scale)).exp();
+
+                            // Blend between flat background [0,1] and vortex direction
+                            let mut u = (1.0 - twist) * 0.0 + twist * tu;
+                            let mut v = (1.0 - twist) * 1.0 + twist * tv;
+
+                            let mag = (u * u + v * v).sqrt();
+                            if mag > 0.0 {
+                                u /= mag;
+                                v /= mag;
+                            }
+
                             universe.current[idx] = [u, v];
                             universe.previous[idx] = [u, v];
                         }
                     }
                 }
             }
-        }
-        
+        }       
         // Update the mouse state for the next frame
         was_mouse_down = is_mouse_down;
 
@@ -148,11 +169,23 @@ fn main() {
         universe.step();
 
         // 2. Render colors
-        for i in 0..buffer.len() {
-            buffer[i] = phase_to_color(universe.current[i]);
+        for sy in 0..SIM_HEIGHT {
+            for sx in 0..SIM_WIDTH {
+                let color = phase_to_color(universe.current[sy * SIM_WIDTH + sx]);
+
+                for oy in 0..SCALE {
+                    for ox in 0..SCALE {
+                        let wx = sx * SCALE + ox;
+                        let wy = sy * SCALE + oy;
+                        buffer[wy * WINDOW_WIDTH + wx] = color;
+                    }
+                }
+            }
         }
 
         // 3. Draw
-        window.update_with_buffer(&buffer, WIDTH, HEIGHT).unwrap();
+        window
+            .update_with_buffer(&buffer, WINDOW_WIDTH, WINDOW_HEIGHT)
+            .unwrap();
     }
 }
