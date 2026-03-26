@@ -1,10 +1,10 @@
-use minifb::{Key, Window, WindowOptions};
+use minifb::{Key, Window, WindowOptions, MouseMode};
 use std::f32::consts::PI;
 use rand::Rng;
 
-const SIM_WIDTH: usize = 400; // Scaled down for speed, set to 800 if preferred
-const SIM_HEIGHT: usize = 400;
-const SCALE: usize = 2; 
+const SIM_WIDTH: usize = 600;  // 800 might be slow in Debug mode, 600 is a good middle ground
+const SIM_HEIGHT: usize = 600;
+const SCALE: usize = 1; 
 const WINDOW_WIDTH: usize = SIM_WIDTH * SCALE;
 const WINDOW_HEIGHT: usize = SIM_HEIGHT * SCALE;
 
@@ -25,96 +25,101 @@ impl Universe {
         wy * self.width + wx
     }
 
-    pub fn step(&mut self) {
-        let mut next_t = vec![0.0; self.theta.len()];
-        let mut next_r = vec![0.0; self.rho.len()];
-        
-        let base_speed = 0.22; 
-        let latch = 0.45;            
-        let g_strength = 15.0;       
-        let surface_tension = 0.2; 
-        let friction = 0.95;        
-
-        for y in 0..self.height as isize {
-            for x in 0..self.width as isize {
-                let idx = self.get_index(x, y);
-                let up = self.theta[self.get_index(x, y-1)];
-                let dn = self.theta[self.get_index(x, y+1)];
-                let lt = self.theta[self.get_index(x-1, y)];
-                let rt = self.theta[self.get_index(x+1, y)];
-
-                let ct = self.theta[idx];
-                let pt = self.theta_prev[idx];
-                let cr = self.rho[idx];
-
-                let local_speed = base_speed / (1.0 + (cr * cr) * g_strength).min(10.0);
-                let lap = (up-ct).sin() + (dn-ct).sin() + (lt-ct).sin() + (rt-ct).sin();
-                let mut nt = (2.0 * ct) - pt + (local_speed * lap);
-
-                // --- THE GRAVITY HOOK ---
-                // This makes the phase "fall" into areas of high density.
-                // It creates a 'self-reinforcing' bridge.
-                nt += (cr * 0.05);
-                nt -= ct.sin() * latch;
-                
-                if cr < 0.1 { nt = (nt - ct) * friction + ct; }
-
-                let grad = (up-dn).powi(2) + (lt-rt).powi(2);
-                let target_r = if grad > surface_tension { (grad * 3.0).min(1.0) } else { 0.0 };
-                let nr = (cr * 0.95) + (target_r * 0.05);
-
-                next_t[idx] = nt;
-                next_r[idx] = nr;
-            }
-        }
-        self.theta_prev = self.theta.clone();
-        self.theta = next_t;
-        self.rho = next_r;
-    }
-}
-
-fn phase_to_color(theta: f32, rho: f32, show_potential: bool) -> u32 {
-    let r = (theta.sin() * 0.5 + 0.5) * 255.0;
-    let g = ((theta + 2.0).sin() * 0.5 + 0.5) * 255.0;
-    let b = ((theta + 4.0).sin() * 0.5 + 0.5) * 255.0;
-
-    let brightness = if show_potential {
-        (rho * 4.0).clamp(0.05, 1.0) // Potential view makes the vacuum "glow"
-    } else {
-        if rho < 0.05 { 0.0 } else { rho.clamp(0.0, 1.0) }
-    };
+pub fn step(&mut self) {
+    let mut next_t = vec![0.0; self.theta.len()];
+    let mut next_r = vec![0.0; self.rho.len()];
     
-    let red = (r * brightness) as u32;
-    let green = (g * brightness) as u32;
-    let blue = (b * brightness) as u32;
+    let base_speed = 0.35; 
+    let latch = 0.25;         
+    
+    // 1. THE NYQUIST CAP: Lowered gravity strength. 
+    // Time still slows down, but not enough to break the pixel grid.
+    let g_strength = 3.5;     
+    
+    // 2. HIGH TENSION: Require a much steeper wave twist to "ignite" matter
+    let surface_tension = 0.4; 
 
-    (255 << 24) | (red << 16) | (green << 8) | blue
+    for y in 0..self.height as isize {
+        for x in 0..self.width as isize {
+            let idx = self.get_index(x, y);
+            let up = self.theta[self.get_index(x, y-1)];
+            let dn = self.theta[self.get_index(x, y+1)];
+            let lt = self.theta[self.get_index(x-1, y)];
+            let rt = self.theta[self.get_index(x+1, y)];
+
+            let ct = self.theta[idx];
+            let pt = self.theta_prev[idx];
+            let cr = self.rho[idx];
+
+            // 1. Time Dilation
+            let local_speed = base_speed / (1.0 + cr * g_strength).min(10.0);
+
+            // 2. Phase Update
+            let lap = (up-ct).sin() + (dn-ct).sin() + (lt-ct).sin() + (rt-ct).sin();
+            let mut nt = (2.0 * ct) - pt + (local_speed * lap);
+
+            // 3. The Latch
+            nt -= ct.sin() * latch;
+            
+            // --- 4. THE VORTEX DETECTOR (Curl) ---
+            // We convert the neighboring phases into vector components
+            let vy_rt = rt.sin(); 
+            let vy_lt = lt.sin();
+            let vx_dn = dn.cos(); 
+            let vx_up = up.cos();
+
+            // Calculate the 2D Curl (Rotation)
+            let d_vy_dx = (vy_rt - vy_lt) / 2.0;
+            let d_vx_dy = (vx_dn - vx_up) / 2.0;
+            let curl = (d_vy_dx - d_vx_dy).abs();
+
+            // Matter ONLY ignites if there is a distinct, spinning vortex
+            let target_r = if curl > 0.4 { 
+                (curl * 1.5).min(1.0) 
+            } else { 
+                0.0 
+            };
+
+            // 5. Dynamic Rho with mild evaporation to clean up the vacuum
+            let nr = (cr * 0.92) + (target_r * 0.08) - 0.005;
+
+            next_t[idx] = nt;
+            next_r[idx] = nr.clamp(0.01, 1.0); // Never let the vacuum drop below 0.01
+        }
+    }
+    self.theta_prev = self.theta.clone();
+    self.theta = next_t;
+    self.rho = next_r;
+}
 }
 
 fn main() {
     let mut universe = Universe::new(SIM_WIDTH, SIM_HEIGHT);
     let mut buffer = vec![0u32; WINDOW_WIDTH * WINDOW_HEIGHT];
-    let mut window = Window::new("Now Wave - [H] Heat [P] Potential [N] Nudge", WINDOW_WIDTH, WINDOW_HEIGHT, WindowOptions::default()).unwrap();
+    let mut window = Window::new("Now Wave - T:Warp | H:Heat | P:Potential", WINDOW_WIDTH, WINDOW_HEIGHT, WindowOptions::default()).unwrap();
     let mut last_m = false;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         if window.is_key_down(Key::Space) { universe = Universe::new(SIM_WIDTH, SIM_HEIGHT); }
         
-        // 1. INPUT HANDLING
-        let is_m = window.get_mouse_down(minifb::MouseButton::Left) || window.get_mouse_down(minifb::MouseButton::Right);
+        // --- 1. MOUSE INJECTION (DPI FIX) ---
+        let is_m = window.get_mouse_down(minifb::MouseButton::Left);
         if is_m && !last_m {
-            if let Some((mx, my)) = window.get_mouse_pos(minifb::MouseMode::Discard) {
-                let (cx, cy) = (mx as isize / SCALE as isize, my as isize / SCALE as isize);
-                let swirl = if window.get_mouse_down(minifb::MouseButton::Right) { -1.0 } else { 1.0 };
-                for dy in -20..20 {
-                    for dx in -20..20 {
-                        if dx*dx + dy*dy <= 400 {
+            if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Discard) {
+                // Scaling fix: Map logical mouse to physical buffer
+                let cx = (mx as f32) as isize;
+                let cy = (my as f32) as isize;
+                
+                for dy in -25..25 {
+                    for dx in -25..25 {
+                        let dist_sq = (dx*dx + dy*dy) as f32;
+                        if dist_sq <= 625.0 {
                             let idx = universe.get_index(cx+dx, cy+dy);
                             let angle = (dy as f32).atan2(dx as f32);
-                            let intensity = (-( (dx*dx+dy*dy) as f32 ) / 100.0).exp();
-                            universe.theta[idx] = angle * swirl * intensity;
+                            let intensity = (-dist_sq / 150.0).exp();
+                            universe.theta[idx] = angle * intensity;
                             universe.theta_prev[idx] = universe.theta[idx];
-                            universe.rho[idx] = 0.8 * intensity;
+                            universe.rho[idx] = 0.9 * intensity; 
                         }
                     }
                 }
@@ -122,80 +127,54 @@ fn main() {
         }
         last_m = is_m;
 
-        // 2. INTERACTIVE TOOLS
-        if window.is_key_down(Key::H) { // HEAT: Jitter all matter
-            let mut rng = rand::thread_rng();
-            for i in 0..universe.theta.len() {
-                if universe.rho[i] > 0.1 { universe.theta[i] += rng.gen_range(-0.1..0.1); }
+        // --- 2. TIME WARP & HEAT ---
+        let steps = if window.is_key_down(Key::T) { 100 } else { 1 };
+        for _ in 0..steps {
+            universe.step();
+            if window.is_key_down(Key::H) {
+                let mut rng = rand::thread_rng();
+                for i in 0..universe.theta.len() {
+                    if universe.rho[i] > 0.1 { universe.theta[i] += rng.gen_range(-0.1..0.1); }
+                }
             }
         }
-        if window.is_key_down(Key::N) { // NUDGE: Small momentum push
-            let mut rng = rand::thread_rng();
-            for i in 0..universe.theta.len() {
-                if universe.rho[i] > 0.1 { universe.theta_prev[i] += rng.gen_range(-0.02..0.02); }
-            }
-        }
-        let show_potential = window.is_key_down(Key::P);
 
-        universe.step();
-
-        // 3. HUD LOGIC
-        // --- SUB-PIXEL CENTROID HUD ---
-        let mut centers = Vec::new();
+        // --- 3. CENTROID HUD (Sub-Pixel Tracking) ---
+        let mut peaks = Vec::new();
         let mut search_rho = universe.rho.clone();
-
         for _ in 0..2 {
-            let mut total_rho = 0.0;
-            let mut sum_x = 0.0;
-            let mut sum_y = 0.0;
-            let mut max_val = 0.0;
-            let mut max_idx = 0;
-
-            // Find the core of the next particle
-            for (i, &val) in search_rho.iter().enumerate() {
-                if val > max_val { max_val = val; max_idx = i; }
-            }
-
-            if max_val > 0.3 {
+            let mut max_val = 0.0; let mut max_idx = 0;
+            for (i, &val) in search_rho.iter().enumerate() { if val > max_val { max_val = val; max_idx = i; } }
+            if max_val > 0.4 {
                 let px = (max_idx % SIM_WIDTH) as isize;
                 let py = (max_idx / SIM_WIDTH) as isize;
-                
-                // Calculate the "Center of Mass" in a 20px radius
-                for dy in -20..20 {
-                    for dx in -20..20 {
-                        let idx = universe.get_index(px + dx, py + dy);
-                        let val = search_rho[idx];
-                        if val > 0.1 {
-                            sum_x += (px + dx) as f32 * val;
-                            sum_y += (py + dy) as f32 * val;
-                            total_rho += val;
-                            search_rho[idx] = 0.0; // Clear for next particle
-                        }
+                let (mut sx, mut sy, mut total) = (0.0, 0.0, 0.0);
+                for dy in -30..30 {
+                    for dx in -30..30 {
+                        let idx = universe.get_index(px+dx, py+dy);
+                        let v = search_rho[idx];
+                        if v > 0.1 { sx += (px+dx) as f32 * v; sy += (py+dy) as f32 * v; total += v; search_rho[idx] = 0.0; }
                     }
                 }
-                centers.push((sum_x / total_rho, sum_y / total_rho));
+                peaks.push((sx/total, sy/total));
             }
         }
 
-        if centers.len() == 2 {
-            let (c1, c2) = (centers[0], centers[1]);
-            let dx = c2.0 - c1.0;
-            let dy = c2.1 - c1.1;
-            let dist = (dx*dx + dy*dy).sqrt();
-            window.set_title(&format!("Sub-Pixel Dist: {:.4} | Force: {:.5}", dist, 0.6)); // 0.6 is your stable bridge
+        if peaks.len() == 2 {
+            let d = ((peaks[0].0-peaks[1].0).powi(2) + (peaks[0].1-peaks[1].1).powi(2)).sqrt();
+            window.set_title(&format!("Dist: {:.4}", d));
         }
 
-        // 4. RENDER
-        for y in 0..SIM_HEIGHT {
-            for x in 0..SIM_WIDTH {
-                let idx = y * SIM_WIDTH + x;
-                let color = phase_to_color(universe.theta[idx], universe.rho[idx], show_potential);
-                for oy in 0..SCALE {
-                    for ox in 0..SCALE {
-                        buffer[(y * SCALE + oy) * WINDOW_WIDTH + (x * SCALE + ox)] = color;
-                    }
-                }
-            }
+        // --- 4. RENDER ---
+        let p_view = window.is_key_down(Key::P);
+        for i in 0..buffer.len() {
+            let t = universe.theta[i];
+            let r = universe.rho[i];
+            let bri = if p_view { (r * 5.0).clamp(0.05, 1.0) } else { if r < 0.05 { 0.0 } else { r } };
+            let red = ((t.sin() * 0.5 + 0.5) * 255.0 * bri) as u32;
+            let grn = (((t+2.0).sin() * 0.5 + 0.5) * 255.0 * bri) as u32;
+            let blu = (((t+4.0).sin() * 0.5 + 0.5) * 255.0 * bri) as u32;
+            buffer[i] = (255 << 24) | (red << 16) | (grn << 8) | blu;
         }
         window.update_with_buffer(&buffer, WINDOW_WIDTH, WINDOW_HEIGHT).unwrap();
     }
