@@ -29,15 +29,7 @@ pub fn step(&mut self) {
     let mut next_t = vec![0.0; self.theta.len()];
     let mut next_r = vec![0.0; self.rho.len()];
     
-    let base_speed = 0.35; 
-    let latch = 0.25;         
-    
-    // 1. THE NYQUIST CAP: Lowered gravity strength. 
-    // Time still slows down, but not enough to break the pixel grid.
-    let g_strength = 3.5;     
-    
-    // 2. HIGH TENSION: Require a much steeper wave twist to "ignite" matter
-    let surface_tension = 0.4; 
+    let base_speed = 0.4; 
 
     for y in 0..self.height as isize {
         for x in 0..self.width as isize {
@@ -51,40 +43,33 @@ pub fn step(&mut self) {
             let pt = self.theta_prev[idx];
             let cr = self.rho[idx];
 
-            // 1. Time Dilation
-            let local_speed = base_speed / (1.0 + cr * g_strength).min(10.0);
+            // 1. Gentle Time Dilation (NO FREEZING)
+            // Time slows down by a maximum of 3x. This prevents the boundary explosion.
+            let local_speed = base_speed / (1.0 + cr * 2.0);
 
-            // 2. Phase Update
+            // 2. The Wave Equation
             let lap = (up-ct).sin() + (dn-ct).sin() + (lt-ct).sin() + (rt-ct).sin();
             let mut nt = (2.0 * ct) - pt + (local_speed * lap);
 
-            // 3. The Latch
-            nt -= ct.sin() * latch;
-            
-            // --- 4. THE VORTEX DETECTOR (Curl) ---
-            // We convert the neighboring phases into vector components
-            let vy_rt = rt.sin(); 
-            let vy_lt = lt.sin();
-            let vx_dn = dn.cos(); 
-            let vx_up = up.cos();
+            // Universal friction to stop noise from echoing forever
+            nt = (nt - ct) * 0.99 + ct;
 
-            // Calculate the 2D Curl (Rotation)
-            let d_vy_dx = (vy_rt - vy_lt) / 2.0;
-            let d_vx_dy = (vx_dn - vx_up) / 2.0;
-            let curl = (d_vy_dx - d_vx_dy).abs();
+            // --- 3. THE "PHASE VARIANCE" KNOT DETECTOR ---
+            // We measure how violently the phase clashes with its neighbors.
+            // At the exact core of a knot, this is high. At the edges, it's near zero.
+            let diff_up = (up-ct).sin().powi(2);
+            let diff_dn = (dn-ct).sin().powi(2);
+            let diff_lt = (lt-ct).sin().powi(2);
+            let diff_rt = (rt-ct).sin().powi(2);
+            let phase_variance = diff_up + diff_dn + diff_lt + diff_rt;
 
-            // Matter ONLY ignites if there is a distinct, spinning vortex
-            let target_r = if curl > 0.4 { 
-                (curl * 1.5).min(1.0) 
-            } else { 
-                0.0 
-            };
-
-            // 5. Dynamic Rho with mild evaporation to clean up the vacuum
-            let nr = (cr * 0.92) + (target_r * 0.08) - 0.005;
+            // 4. Density tied directly to the knot's core
+            // Because variance is only high at the exact center, it CANNOT grow endlessly.
+            let target_r = (phase_variance * 0.5).clamp(0.0, 1.0);
+            let nr = (cr * 0.95) + (target_r * 0.05);
 
             next_t[idx] = nt;
-            next_r[idx] = nr.clamp(0.01, 1.0); // Never let the vacuum drop below 0.01
+            next_r[idx] = nr.max(0.01); // Safe vacuum floor
         }
     }
     self.theta_prev = self.theta.clone();
@@ -103,28 +88,34 @@ fn main() {
         if window.is_key_down(Key::Space) { universe = Universe::new(SIM_WIDTH, SIM_HEIGHT); }
         
         // --- 1. MOUSE INJECTION (DPI FIX) ---
-        let is_m = window.get_mouse_down(minifb::MouseButton::Left);
-        if is_m && !last_m {
-            if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Discard) {
-                // Scaling fix: Map logical mouse to physical buffer
-                let cx = (mx as f32) as isize;
-                let cy = (my as f32) as isize;
+let is_m = window.get_mouse_down(minifb::MouseButton::Left);
+if is_m && !last_m {
+    if let Some((mx, my)) = window.get_mouse_pos(minifb::MouseMode::Discard) {
+        let (cx, cy) = (mx as isize / SCALE as isize, my as isize / SCALE as isize);
+        
+        // Inject a Dipole: Two vortices spinning opposite directions
+        for dy in -40..40 {
+            for dx in -60..60 {
+                let idx = universe.get_index(cx+dx, cy+dy);
                 
-                for dy in -25..25 {
-                    for dx in -25..25 {
-                        let dist_sq = (dx*dx + dy*dy) as f32;
-                        if dist_sq <= 625.0 {
-                            let idx = universe.get_index(cx+dx, cy+dy);
-                            let angle = (dy as f32).atan2(dx as f32);
-                            let intensity = (-dist_sq / 150.0).exp();
-                            universe.theta[idx] = angle * intensity;
-                            universe.theta_prev[idx] = universe.theta[idx];
-                            universe.rho[idx] = 0.9 * intensity; 
-                        }
-                    }
+                // Left Knot (+1 Winding)
+                let d1_sq = ((dx+20).pow(2) + dy.pow(2)) as f32;
+                if d1_sq < 400.0 {
+                    universe.theta[idx] += (dy as f32).atan2((dx+20) as f32);
+                    universe.rho[idx] = 1.0;
+                }
+                
+                // Right Knot (-1 Winding)
+                let d2_sq = ((dx-20).pow(2) + dy.pow(2)) as f32;
+                if d2_sq < 400.0 {
+                    universe.theta[idx] -= (dy as f32).atan2((dx-20) as f32); // Notice the minus sign
+                    universe.rho[idx] = 1.0;
                 }
             }
         }
+        universe.theta_prev = universe.theta.clone();
+    }
+}
         last_m = is_m;
 
         // --- 2. TIME WARP & HEAT ---
