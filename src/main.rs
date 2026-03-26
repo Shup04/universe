@@ -73,8 +73,8 @@ impl Universe {
     }
 
     fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32, vx: f32, vy: f32) {
-        let radius: isize = 50;
-        let sigma = 19.0_f32;
+        let radius: isize = 20;
+        let sigma = 20.0_f32;
 
         for dy in -radius..=radius {
             for dx in -radius..=radius {
@@ -234,7 +234,8 @@ fn main() {
 
                 if is_r {
                     // Intentional separated matter/antimatter pair
-                    universe.spawn_pair(cx, cy, 45);
+                    //universe.spawn_pair(cx, cy, 45);
+                    universe.spawn_vortex(cx, cy, -1.0, 0.0, 0.0);
                     universe.charge = universe.recompute_charge(&universe.theta);
                 }
             }
