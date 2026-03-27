@@ -2,8 +2,8 @@ use minifb::{Key, MouseMode, Window, WindowOptions};
 use rand::Rng;
 use std::f32::consts::PI;
 
-const SIM_WIDTH: usize = 600;
-const SIM_HEIGHT: usize = 600;
+const SIM_WIDTH: usize = 400;
+const SIM_HEIGHT: usize = 400;
 const SCALE: usize = 1;
 const WINDOW_WIDTH: usize = SIM_WIDTH * SCALE;
 const WINDOW_HEIGHT: usize = SIM_HEIGHT * SCALE;
@@ -15,6 +15,8 @@ pub struct Universe {
     theta_prev: Vec<f32>,
     rho: Vec<f32>,
     charge: Vec<f32>,
+    px: Vec<f32>,
+    py: Vec<f32>,
 }
 
 fn wrap_angle(a: f32) -> f32 {
@@ -38,6 +40,8 @@ impl Universe {
             theta_prev: vec![0.0; size],
             rho: vec![0.01; size],
             charge: vec![0.0; size],
+            px: vec![0.0; size],
+            py: vec![0.0; size],
         }
     }
 
@@ -72,7 +76,7 @@ impl Universe {
         next_charge
     }
 
-    fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32, vx: f32, vy: f32) {
+    fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32) {
         let radius: isize = 20;
         let sigma = 20.0_f32;
 
@@ -83,31 +87,41 @@ impl Universe {
                     let idx = self.get_index(cx + dx, cy + dy);
 
                     let envelope = (-r2 / (2.0 * sigma * sigma)).exp();
-
-                    // Smooth vortex angle
                     let angle = sign * (dy as f32).atan2(dx as f32);
 
-                    // Write, do not add
                     self.theta[idx] = angle * envelope;
                     self.theta_prev[idx] = angle * envelope;
-
-                    // Small velocity kick if wanted
-                    self.theta_prev[idx] -= (vx * dx as f32 + vy * dy as f32) * 0.01 * envelope;
-
                     self.rho[idx] = self.rho[idx].max(0.9 * envelope);
                 }
             }
         }
     }
 
-    fn spawn_pair(&mut self, cx: isize, cy: isize, separation: isize) {
-        self.spawn_vortex(cx - separation, cy,  1.0, 0.0, 0.0);
-        self.spawn_vortex(cx + separation, cy, -1.0, 0.0, 0.0);
+    fn push_nearby(&mut self, cx: isize, cy: isize, push_x: f32, push_y: f32) {
+        let radius: isize = 28;
+
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                let r2 = (dx * dx + dy * dy) as f32;
+                if r2 <= (radius * radius) as f32 {
+                    let idx = self.get_index(cx + dx, cy + dy);
+
+                    if self.rho[idx] > 0.15 {
+                        let envelope = (-r2 / 180.0).exp();
+                        self.px[idx] += push_x * envelope;
+                        self.py[idx] += push_y * envelope;
+                    }
+                }
+            }
+        }
     }
 
     pub fn step(&mut self) {
         let mut next_t = vec![0.0; self.theta.len()];
+        let mut next_tp = vec![0.0; self.theta_prev.len()];
         let mut next_r = vec![0.0; self.rho.len()];
+        let mut next_px = vec![0.0; self.px.len()];
+        let mut next_py = vec![0.0; self.py.len()];
 
         let base_speed = 0.4;
 
@@ -124,41 +138,60 @@ impl Universe {
                 let pt = self.theta_prev[idx];
                 let cr = self.rho[idx];
 
-                // Time slows in dense matter, but never fully freezes
+                let rho_up = self.rho[self.get_index(x, y - 1)];
+                let rho_dn = self.rho[self.get_index(x, y + 1)];
+                let rho_lt = self.rho[self.get_index(x - 1, y)];
+                let rho_rt = self.rho[self.get_index(x + 1, y)];
+
+                // Matter slows local time-wave speed, but never freezes it.
                 let local_speed = base_speed / (1.0 + cr * 2.0);
 
-                // Phase wave update
+                // Stable theta wave update. No raw theta advection.
                 let lap = (up - ct).sin() + (dn - ct).sin() + (lt - ct).sin() + (rt - ct).sin();
-                let mut nt = (2.0 * ct) - pt + (local_speed * lap);
+                let wave_nt = (2.0 * ct) - pt + (local_speed * lap);
+                let nt = (wave_nt - ct) * 0.995 + ct;
 
-                // Mild universal friction
-                nt = (nt - ct) * 0.99 + ct;
-
-                // Local knot detector from phase variance
                 let diff_up = (up - ct).sin().powi(2);
                 let diff_dn = (dn - ct).sin().powi(2);
                 let diff_lt = (lt - ct).sin().powi(2);
                 let diff_rt = (rt - ct).sin().powi(2);
                 let phase_variance = diff_up + diff_dn + diff_lt + diff_rt;
 
-                // Signed local winding strength
                 let q = self.local_charge_from_theta(&self.theta, x, y);
                 let knot_strength = q.abs().min(1.0);
 
-                // Blend variance and winding strength
                 let target_r = (0.35 * phase_variance + 0.65 * knot_strength).clamp(0.0, 1.0);
 
-                // Gentle density relaxation
-                let nr = (cr * 0.96) + (target_r * 0.04);
+                let fx = (rho_lt - rho_rt) * 0.003;
+                let fy = (rho_up - rho_dn) * 0.003;
+
+                let pxi = self.px[idx];
+                let pyi = self.py[idx];
+                let drag = 0.995;
+                let npx = pxi * drag + fx;
+                let npy = pyi * drag + fy;
+
+                let src_x = x as f32 - npx;
+                let src_y = y as f32 - npy;
+                let src_idx = self.get_index(src_x.floor() as isize, src_y.floor() as isize);
+
+                let advected_rho = self.rho[src_idx];
+                let formed_rho = (cr * 0.96) + (target_r * 0.04);
+                let nr = (0.90 * formed_rho + 0.10 * advected_rho).clamp(0.001, 1.0);
 
                 next_t[idx] = nt;
-                next_r[idx] = nr.max(0.01);
+                next_tp[idx] = ct;
+                next_r[idx] = nr;
+                next_px[idx] = npx;
+                next_py[idx] = npy;
             }
         }
 
-        self.theta_prev = self.theta.clone();
+        self.theta_prev = next_tp;
         self.theta = next_t;
         self.rho = next_r;
+        self.px = next_px;
+        self.py = next_py;
         self.charge = self.recompute_charge(&self.theta);
     }
 }
@@ -185,13 +218,10 @@ fn charge_to_color(charge: f32, rho: f32) -> u32 {
     let c = (255.0 * strength) as u32;
 
     if q > 0.02 {
-        // positive charge = red
         (255 << 24) | (c << 16)
     } else if q < -0.02 {
-        // negative charge = blue
         (255 << 24) | c
     } else {
-        // near zero = dim grey
         let g = (40.0 * rho.clamp(0.0, 1.0)) as u32;
         (255 << 24) | (g << 16) | (g << 8) | g
     }
@@ -202,7 +232,7 @@ fn main() {
     let mut buffer = vec![0u32; WINDOW_WIDTH * WINDOW_HEIGHT];
 
     let mut window = Window::new(
-        "Now Wave | LMB: spawn | RMB: push | H: heat | T: warp | P: rho | C: charge | Space: reset",
+        "Now Wave | LMB + | RMB - | Shift+L push right | Shift+R push left | H heat | T warp | P rho | C charge | Space reset",
         WINDOW_WIDTH,
         WINDOW_HEIGHT,
         WindowOptions::default(),
@@ -220,23 +250,29 @@ fn main() {
 
         let is_l = window.get_mouse_down(minifb::MouseButton::Left);
         let is_r = window.get_mouse_down(minifb::MouseButton::Right);
+        let shift = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
 
         if !last_m {
             if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Discard) {
                 let cx = mx as isize / SCALE as isize;
                 let cy = my as isize / SCALE as isize;
 
-                if is_l {
-                    // One single matter vortex
-                    universe.spawn_vortex(cx, cy, 1.0, 0.0, 0.0);
-                    universe.charge = universe.recompute_charge(&universe.theta);
-                }
-
-                if is_r {
-                    // Intentional separated matter/antimatter pair
-                    //universe.spawn_pair(cx, cy, 45);
-                    universe.spawn_vortex(cx, cy, -1.0, 0.0, 0.0);
-                    universe.charge = universe.recompute_charge(&universe.theta);
+                if shift {
+                    if is_l {
+                        universe.push_nearby(cx, cy, 0.8, 0.0);
+                    }
+                    if is_r {
+                        universe.push_nearby(cx, cy, -0.8, 0.0);
+                    }
+                } else {
+                    if is_l {
+                        universe.spawn_vortex(cx, cy, 1.0);
+                        universe.charge = universe.recompute_charge(&universe.theta);
+                    }
+                    if is_r {
+                        universe.spawn_vortex(cx, cy, -1.0);
+                        universe.charge = universe.recompute_charge(&universe.theta);
+                    }
                 }
             }
         }
@@ -259,7 +295,6 @@ fn main() {
             }
         }
 
-        // Simple centroid HUD for two strongest blobs
         let mut peaks = Vec::new();
         let mut search_rho = universe.rho.clone();
 
@@ -302,17 +337,23 @@ fn main() {
         }
 
         let total_charge: f32 = universe.charge.iter().sum();
+        let total_momentum: f32 = universe
+            .px
+            .iter()
+            .zip(universe.py.iter())
+            .map(|(px, py)| (px * px + py * py).sqrt())
+            .sum();
 
         if peaks.len() == 2 {
             let d = ((peaks[0].0 - peaks[1].0).powi(2) + (peaks[0].1 - peaks[1].1).powi(2)).sqrt();
             window.set_title(&format!(
-                "Dist: {:.4} | Total charge: {:.4}",
-                d, total_charge
+                "Dist: {:.4} | Total charge: {:.4} | Total momentum: {:.4}",
+                d, total_charge, total_momentum
             ));
         } else {
             window.set_title(&format!(
-                "Total charge: {:.4}",
-                total_charge
+                "Total charge: {:.4} | Total momentum: {:.4}",
+                total_charge, total_momentum
             ));
         }
 
