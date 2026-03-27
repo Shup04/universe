@@ -199,17 +199,16 @@ pub fn step(&mut self) {
             let mut nu = (2.0 * u_ct) - u_pt + (local_speed * lap_u);
             let mut nv = (2.0 * v_ct) - v_pt + (local_speed * lap_v);
 
-            // --- THE MEXICAN HAT POTENTIAL (Restoring Force) ---
-            // This forces the vacuum to maintain an amplitude of 1.0
-            // Without this, the U and V vectors would just stretch into infinity or fade to 0.
+            // --- THE MEXICAN HAT POTENTIAL ---
             let amp_sq = u_ct * u_ct + v_ct * v_ct;
             let restoring_force = 1.0 - amp_sq;
             nu += u_ct * restoring_force * 0.1;
             nv += v_ct * restoring_force * 0.1;
 
-            // Universal friction to stop runaway high-frequency noise
-            nu = (nu - u_ct) * 0.99 + u_ct;
-            nv = (nv - v_ct) * 0.99 + v_ct;
+            // THE FIX: Lowered Friction (0.999 instead of 0.99)
+            // This allows the Meson pair to glide without losing energy and collapsing.
+            nu = (nu - u_ct) * 0.999 + u_ct;
+            nv = (nv - v_ct) * 0.999 + v_ct;
 
             // --- KINETIC ENERGY & TOPOLOGY ---
             let diff_up = (u_up - u_ct).powi(2) + (v_up - v_ct).powi(2);
@@ -218,18 +217,16 @@ pub fn step(&mut self) {
             let diff_rt = (u_rt - u_ct).powi(2) + (v_rt - v_ct).powi(2);
             let phase_variance = diff_up + diff_dn + diff_lt + diff_rt;
 
-            // Jacobian Determinant (The true math for topological knots)
             let du_dx = (u_rt - u_lt) * 0.5;
             let dv_dy = (v_dn - v_up) * 0.5; 
             let du_dy = (u_dn - u_up) * 0.5;
             let dv_dx = (v_rt - v_lt) * 0.5;
+
             let jacobian = du_dx * dv_dy - du_dy * dv_dx; 
-            
-            next_charge[idx] = jacobian * 15.0; // Amplify for visibility in charge view
             let knot_strength = (jacobian * 5.0).abs().min(1.0);
             let target_r = (0.35 * phase_variance + 0.65 * knot_strength).clamp(0.0, 1.0);
 
-            // --- YOUR ADVECTION SOLVER ---
+            // --- CLEAN ADVECTION (No Hacks, No Explosions) ---
             let rho_up = self.rho[self.get_index(x, y-1)];
             let rho_dn = self.rho[self.get_index(x, y+1)];
             let rho_lt = self.rho[self.get_index(x-1, y)];
