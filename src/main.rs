@@ -79,45 +79,76 @@ impl Universe {
         next_charge
     }
 
-    fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32) {
-        let radius: isize = 25;
-        let sigma = 30.0_f32;
+fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32) {
+    let w = self.width as isize;
+    let h = self.height as isize;
 
-        for dy in -radius..=radius {
-            for dx in -radius..=radius {
-                let fx = dx as f32 + 0.5;
-                let fy = dy as f32 + 0.5;
-                let r2 = fx * fx + fy * fy;
+    // 1. THE TOPOLOGICAL TWIN
+    // We place an anti-particle exactly on the opposite side of the universe 
+    // to balance the Torus topology and destroy the "Dirac String" slingshot.
+    let cx2 = (cx + w / 2).rem_euclid(w);
+    let cy2 = (cy + h / 2).rem_euclid(h);
 
-                if r2 <= (radius * radius) as f32 {
-                    let idx = self.get_index(cx + dx, cy + dy);
+    let core_size = 4.0;
 
-                    // 1. Calculate the exact same twist angle from your old Theta code
-                    let envelope = (-r2 / (2.0 * sigma * sigma)).exp();
-                    let twist_angle = sign * fy.atan2(fx) * envelope;
+    // We update the ENTIRE grid so there are absolutely no boundary artifacts
+    for y in 0..h {
+        for x in 0..w {
+            let idx = self.get_index(x, y);
 
-                    // 2. Rotate the existing U, V vectors by that angle
-                    let cos_a = twist_angle.cos();
-                    let sin_a = twist_angle.sin();
+            // Wrap distances for Particle 1 (Local)
+            let mut dx1 = x - cx;
+            let mut dy1 = y - cy;
+            if dx1 > w / 2 { dx1 -= w; } else if dx1 < -w / 2 { dx1 += w; }
+            if dy1 > h / 2 { dy1 -= h; } else if dy1 < -h / 2 { dy1 += h; }
+            let fx1 = dx1 as f32 + 0.5;
+            let fy1 = dy1 as f32 + 0.5;
+            let r1_sq = fx1 * fx1 + fy1 * fy1;
 
-                    let old_u = self.u[idx];
-                    let old_v = self.v[idx];
+            // Wrap distances for Particle 2 (Hidden Twin)
+            let mut dx2 = x - cx2;
+            let mut dy2 = y - cy2;
+            if dx2 > w / 2 { dx2 -= w; } else if dx2 < -w / 2 { dx2 += w; }
+            if dy2 > h / 2 { dy2 -= h; } else if dy2 < -h / 2 { dy2 += h; }
+            let fx2 = dx2 as f32 + 0.5;
+            let fy2 = dy2 as f32 + 0.5;
+            let r2_sq = fx2 * fx2 + fy2 * fy2;
 
-                    let new_u = old_u * cos_a - old_v * sin_a;
-                    let new_v = old_u * sin_a + old_v * cos_a;
+            // 2. THE HOLLOW CORES
+            // Amplitude is 1.0 everywhere, except it drops to 0.0 at the exact center of both particles
+            let amp1 = (r1_sq.sqrt() / core_size).min(1.0);
+            let amp2 = (r2_sq.sqrt() / core_size).min(1.0);
+            let amp = amp1 * amp2; 
 
-                    // 3. Inject the perfectly blended knot
-                    self.u[idx] = new_u;
-                    self.u_prev[idx] = new_u; // Match history so it doesn't fly away
-                    self.v[idx] = new_v;
-                    self.v_prev[idx] = new_v;
+            // 3. PURE SYMMETRIC PHASE (No Envelopes)
+            // Particle 1 gets 'sign', Particle 2 gets '-sign'
+            let theta1 = sign * fy1.atan2(fx1);
+            let theta2 = -sign * fy2.atan2(fx2);
+            let total_theta = theta1 + theta2 + std::f32::consts::PI / 2.0;
 
-                    // 4. Kickstart the Time Dilation
-                    self.rho[idx] = self.rho[idx].max(0.9 * envelope);
-                }
+            let new_u = amp * total_theta.cos();
+            let new_v = amp * total_theta.sin();
+
+            // 4. COMPLEX MULTIPLICATION
+            // This safely adds the new knot to whatever waves already exist in the universe
+            let old_u = self.u[idx];
+            let old_v = self.v[idx];
+            
+            self.u[idx] = old_u * new_u - old_v * new_v;
+            self.v[idx] = old_u * new_v + old_v * new_u;
+            
+            // Sync history so it has exactly ZERO initial velocity
+            self.u_prev[idx] = self.u[idx];
+            self.v_prev[idx] = self.v[idx];
+
+            // 5. IGNITE MATTER
+            // Time dilation locks both the local particle and its twin safely in place
+            if r1_sq < core_size * core_size || r2_sq < core_size * core_size {
+                self.rho[idx] = 1.0;
             }
         }
     }
+}
 
     fn push_nearby(&mut self, cx: isize, cy: isize, push_x: f32, push_y: f32) {
         let radius: isize = 28;
