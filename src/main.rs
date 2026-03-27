@@ -147,6 +147,7 @@ pub fn step(&mut self) {
     let mut next_r = vec![0.0; self.rho.len()];
     let mut next_px = vec![0.0; self.px.len()];
     let mut next_py = vec![0.0; self.py.len()];
+    let mut next_charge = vec![0.0; self.charge.len()];
     
     let base_speed = 0.4;
 
@@ -208,6 +209,7 @@ pub fn step(&mut self) {
             let dv_dx = (v_rt - v_lt) * 0.5;
             let jacobian = du_dx * dv_dy - du_dy * dv_dx; 
             
+            next_charge[idx] = jacobian * 15.0; // Amplify for visibility in charge view
             let knot_strength = (jacobian * 5.0).abs().min(1.0);
             let target_r = (0.35 * phase_variance + 0.65 * knot_strength).clamp(0.0, 1.0);
 
@@ -253,6 +255,7 @@ pub fn step(&mut self) {
     self.rho = next_r;
     self.px = next_px;
     self.py = next_py;
+    self.charge = next_charge;
 }
 }
 
