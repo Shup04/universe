@@ -82,68 +82,53 @@ impl Universe {
 fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32) {
     let w = self.width as isize;
     let h = self.height as isize;
+    
+    // The distance between the Matter and Antimatter cores
+    let separation = 8.0; 
+    let core_size = 3.0;
 
-    // 1. THE TOPOLOGICAL TWIN
-    // We place an anti-particle exactly on the opposite side of the universe 
-    // to balance the Torus topology and destroy the "Dirac String" slingshot.
-    let cx2 = (cx + w / 2).rem_euclid(w);
-    let cy2 = (cy + h / 2).rem_euclid(h);
-
-    let core_size = 4.0;
-
-    // We update the ENTIRE grid so there are absolutely no boundary artifacts
     for y in 0..h {
         for x in 0..w {
             let idx = self.get_index(x, y);
 
-            // Wrap distances for Particle 1 (Local)
+            // Distance to Particle 1 (+1 Charge)
             let mut dx1 = x - cx;
             let mut dy1 = y - cy;
-            if dx1 > w / 2 { dx1 -= w; } else if dx1 < -w / 2 { dx1 += w; }
-            if dy1 > h / 2 { dy1 -= h; } else if dy1 < -h / 2 { dy1 += h; }
-            let fx1 = dx1 as f32 + 0.5;
-            let fy1 = dy1 as f32 + 0.5;
+            if dx1 > w/2 { dx1 -= w; } else if dx1 < -w/2 { dx1 += w; }
+            if dy1 > h/2 { dy1 -= h; } else if dy1 < -h/2 { dy1 += h; }
+            let fx1 = dx1 as f32 + separation;
+            let fy1 = dy1 as f32;
             let r1_sq = fx1 * fx1 + fy1 * fy1;
 
-            // Wrap distances for Particle 2 (Hidden Twin)
-            let mut dx2 = x - cx2;
-            let mut dy2 = y - cy2;
-            if dx2 > w / 2 { dx2 -= w; } else if dx2 < -w / 2 { dx2 += w; }
-            if dy2 > h / 2 { dy2 -= h; } else if dy2 < -h / 2 { dy2 += h; }
-            let fx2 = dx2 as f32 + 0.5;
-            let fy2 = dy2 as f32 + 0.5;
+            // Distance to Particle 2 (-1 Charge)
+            let fx2 = dx1 as f32 - separation;
+            let fy2 = dy1 as f32;
             let r2_sq = fx2 * fx2 + fy2 * fy2;
 
-            // 2. THE HOLLOW CORES
-            // Amplitude is 1.0 everywhere, except it drops to 0.0 at the exact center of both particles
+            // 1. Hollow Cores for both
             let amp1 = (r1_sq.sqrt() / core_size).min(1.0);
             let amp2 = (r2_sq.sqrt() / core_size).min(1.0);
-            let amp = amp1 * amp2; 
+            let amp = amp1 * amp2;
 
-            // 3. PURE SYMMETRIC PHASE (No Envelopes)
-            // Particle 1 gets 'sign', Particle 2 gets '-sign'
+            // 2. The Perfectly Balanced Phase (Net Zero Charge)
+            // Because one is positive and one is negative, the phase naturally cancels out at a distance.
             let theta1 = sign * fy1.atan2(fx1);
             let theta2 = -sign * fy2.atan2(fx2);
             let total_theta = theta1 + theta2 + std::f32::consts::PI / 2.0;
 
-            let new_u = amp * total_theta.cos();
-            let new_v = amp * total_theta.sin();
+            let knot_u = amp * total_theta.cos();
+            let knot_v = amp * total_theta.sin();
 
-            // 4. COMPLEX MULTIPLICATION
-            // This safely adds the new knot to whatever waves already exist in the universe
+            // 3. Superposition onto the vacuum
             let old_u = self.u[idx];
             let old_v = self.v[idx];
-            
-            self.u[idx] = old_u * new_u - old_v * new_v;
-            self.v[idx] = old_u * new_v + old_v * new_u;
-            
-            // Sync history so it has exactly ZERO initial velocity
+            self.u[idx] = old_u * knot_u - old_v * knot_v;
+            self.v[idx] = old_u * knot_v + old_v * knot_u;
             self.u_prev[idx] = self.u[idx];
             self.v_prev[idx] = self.v[idx];
 
-            // 5. IGNITE MATTER
-            // Time dilation locks both the local particle and its twin safely in place
-            if r1_sq < core_size * core_size || r2_sq < core_size * core_size {
+            // 4. Ignite the compound matter core
+            if r1_sq < core_size * core_size * 2.0 || r2_sq < core_size * core_size * 2.0 {
                 self.rho[idx] = 1.0;
             }
         }
