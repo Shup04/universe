@@ -9,14 +9,13 @@ const WINDOW_WIDTH: usize = SIM_WIDTH * SCALE;
 const WINDOW_HEIGHT: usize = SIM_HEIGHT * SCALE;
 
 pub struct Universe {
-    width: usize,
-    height: usize,
-    theta: Vec<f32>,
-    theta_prev: Vec<f32>,
+    width: usize, height: usize,
+    theta: Vec<f32>, theta_prev: Vec<f32>,
     rho: Vec<f32>,
     charge: Vec<f32>,
-    px: Vec<f32>,
-    py: Vec<f32>,
+    px: Vec<f32>, py: Vec<f32>,
+    u: Vec<f32>, u_prev: Vec<f32>,
+    v: Vec<f32>, v_prev: Vec<f32>,
 }
 
 fn wrap_angle(a: f32) -> f32 {
@@ -42,6 +41,10 @@ impl Universe {
             charge: vec![0.0; size],
             px: vec![0.0; size],
             py: vec![0.0; size],
+            u: vec![1.0; size],
+            u_prev: vec![1.0; size],
+            v: vec![0.0; size],
+            v_prev: vec![0.0; size],
         }
     }
 
@@ -77,20 +80,39 @@ impl Universe {
     }
 
     fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32) {
-        let radius: isize = 20;
-        let sigma = 20.0_f32;
+        let radius: isize = 25;
+        let sigma = 30.0_f32;
 
         for dy in -radius..=radius {
             for dx in -radius..=radius {
-                let r2 = (dx * dx + dy * dy) as f32;
+                let fx = dx as f32 + 0.5;
+                let fy = dy as f32 + 0.5;
+                let r2 = fx * fx + fy * fy;
+
                 if r2 <= (radius * radius) as f32 {
                     let idx = self.get_index(cx + dx, cy + dy);
 
+                    // 1. Calculate the exact same twist angle from your old Theta code
                     let envelope = (-r2 / (2.0 * sigma * sigma)).exp();
-                    let angle = sign * (dy as f32).atan2(dx as f32);
+                    let twist_angle = sign * fy.atan2(fx) * envelope;
 
-                    self.theta[idx] = angle * envelope;
-                    self.theta_prev[idx] = angle * envelope;
+                    // 2. Rotate the existing U, V vectors by that angle
+                    let cos_a = twist_angle.cos();
+                    let sin_a = twist_angle.sin();
+
+                    let old_u = self.u[idx];
+                    let old_v = self.v[idx];
+
+                    let new_u = old_u * cos_a - old_v * sin_a;
+                    let new_v = old_u * sin_a + old_v * cos_a;
+
+                    // 3. Inject the perfectly blended knot
+                    self.u[idx] = new_u;
+                    self.u_prev[idx] = new_u; // Match history so it doesn't fly away
+                    self.v[idx] = new_v;
+                    self.v_prev[idx] = new_v;
+
+                    // 4. Kickstart the Time Dilation
                     self.rho[idx] = self.rho[idx].max(0.9 * envelope);
                 }
             }
@@ -116,84 +138,122 @@ impl Universe {
         }
     }
 
-    pub fn step(&mut self) {
-        let mut next_t = vec![0.0; self.theta.len()];
-        let mut next_tp = vec![0.0; self.theta_prev.len()];
-        let mut next_r = vec![0.0; self.rho.len()];
-        let mut next_px = vec![0.0; self.px.len()];
-        let mut next_py = vec![0.0; self.py.len()];
+pub fn step(&mut self) {
+    // 1. Create the empty vectors for the NEXT frame
+    let mut next_u = vec![0.0; self.u.len()];
+    let mut next_u_prev = vec![0.0; self.u.len()];
+    let mut next_v = vec![0.0; self.v.len()];
+    let mut next_v_prev = vec![0.0; self.v.len()];
+    let mut next_r = vec![0.0; self.rho.len()];
+    let mut next_px = vec![0.0; self.px.len()];
+    let mut next_py = vec![0.0; self.py.len()];
+    
+    let base_speed = 0.4;
 
-        let base_speed = 0.4;
+    for y in 0..self.height as isize {
+        for x in 0..self.width as isize {
+            let idx = self.get_index(x, y);
 
-        for y in 0..self.height as isize {
-            for x in 0..self.width as isize {
-                let idx = self.get_index(x, y);
+            // --- GATHER SPATIAL & TIME DATA FOR U ---
+            let u_up = self.u[self.get_index(x, y-1)];
+            let u_dn = self.u[self.get_index(x, y+1)];
+            let u_lt = self.u[self.get_index(x-1, y)];
+            let u_rt = self.u[self.get_index(x+1, y)];
+            let u_ct = self.u[idx];
+            let u_pt = self.u_prev[idx];
 
-                let up = self.theta[self.get_index(x, y - 1)];
-                let dn = self.theta[self.get_index(x, y + 1)];
-                let lt = self.theta[self.get_index(x - 1, y)];
-                let rt = self.theta[self.get_index(x + 1, y)];
+            // --- GATHER SPATIAL & TIME DATA FOR V ---
+            let v_up = self.v[self.get_index(x, y-1)];
+            let v_dn = self.v[self.get_index(x, y+1)];
+            let v_lt = self.v[self.get_index(x-1, y)];
+            let v_rt = self.v[self.get_index(x+1, y)];
+            let v_ct = self.v[idx];
+            let v_pt = self.v_prev[idx];
 
-                let ct = self.theta[idx];
-                let pt = self.theta_prev[idx];
-                let cr = self.rho[idx];
+            let cr = self.rho[idx];
 
-                let rho_up = self.rho[self.get_index(x, y - 1)];
-                let rho_dn = self.rho[self.get_index(x, y + 1)];
-                let rho_lt = self.rho[self.get_index(x - 1, y)];
-                let rho_rt = self.rho[self.get_index(x + 1, y)];
+            // --- TIME DILATION ---
+            let local_speed = base_speed / (1.0 + cr * 3.0);
 
-                // Matter slows local time-wave speed, but never freezes it.
-                let local_speed = base_speed / (1.0 + cr * 2.0);
+            // --- THE WAVE EQUATION (Pure Linear Math) ---
+            let lap_u = u_up + u_dn + u_lt + u_rt - (4.0 * u_ct);
+            let lap_v = v_up + v_dn + v_lt + v_rt - (4.0 * v_ct);
 
-                // Stable theta wave update. No raw theta advection.
-                let lap = (up - ct).sin() + (dn - ct).sin() + (lt - ct).sin() + (rt - ct).sin();
-                let wave_nt = (2.0 * ct) - pt + (local_speed * lap);
-                let nt = (wave_nt - ct) * 0.995 + ct;
+            let mut nu = (2.0 * u_ct) - u_pt + (local_speed * lap_u);
+            let mut nv = (2.0 * v_ct) - v_pt + (local_speed * lap_v);
 
-                let diff_up = (up - ct).sin().powi(2);
-                let diff_dn = (dn - ct).sin().powi(2);
-                let diff_lt = (lt - ct).sin().powi(2);
-                let diff_rt = (rt - ct).sin().powi(2);
-                let phase_variance = diff_up + diff_dn + diff_lt + diff_rt;
+            // --- THE MEXICAN HAT POTENTIAL (Restoring Force) ---
+            // This forces the vacuum to maintain an amplitude of 1.0
+            // Without this, the U and V vectors would just stretch into infinity or fade to 0.
+            let amp_sq = u_ct * u_ct + v_ct * v_ct;
+            let restoring_force = 1.0 - amp_sq;
+            nu += u_ct * restoring_force * 0.1;
+            nv += v_ct * restoring_force * 0.1;
 
-                let q = self.local_charge_from_theta(&self.theta, x, y);
-                let knot_strength = q.abs().min(1.0);
+            // Universal friction to stop runaway high-frequency noise
+            nu = (nu - u_ct) * 0.99 + u_ct;
+            nv = (nv - v_ct) * 0.99 + v_ct;
 
-                let target_r = (0.35 * phase_variance + 0.65 * knot_strength).clamp(0.0, 1.0);
+            // --- KINETIC ENERGY & TOPOLOGY ---
+            let diff_up = (u_up - u_ct).powi(2) + (v_up - v_ct).powi(2);
+            let diff_dn = (u_dn - u_ct).powi(2) + (v_dn - v_ct).powi(2);
+            let diff_lt = (u_lt - u_ct).powi(2) + (v_lt - v_ct).powi(2);
+            let diff_rt = (u_rt - u_ct).powi(2) + (v_rt - v_ct).powi(2);
+            let phase_variance = diff_up + diff_dn + diff_lt + diff_rt;
 
-                let fx = (rho_lt - rho_rt) * 0.003;
-                let fy = (rho_up - rho_dn) * 0.003;
+            // Jacobian Determinant (The true math for topological knots)
+            let du_dx = (u_rt - u_lt) * 0.5;
+            let dv_dy = (v_dn - v_up) * 0.5; 
+            let du_dy = (u_dn - u_up) * 0.5;
+            let dv_dx = (v_rt - v_lt) * 0.5;
+            let jacobian = du_dx * dv_dy - du_dy * dv_dx; 
+            
+            let knot_strength = (jacobian * 5.0).abs().min(1.0);
+            let target_r = (0.35 * phase_variance + 0.65 * knot_strength).clamp(0.0, 1.0);
 
-                let pxi = self.px[idx];
-                let pyi = self.py[idx];
-                let drag = 0.995;
-                let npx = pxi * drag + fx;
-                let npy = pyi * drag + fy;
+            // --- YOUR ADVECTION SOLVER ---
+            let rho_up = self.rho[self.get_index(x, y-1)];
+            let rho_dn = self.rho[self.get_index(x, y+1)];
+            let rho_lt = self.rho[self.get_index(x-1, y)];
+            let rho_rt = self.rho[self.get_index(x+1, y)];
 
-                let src_x = x as f32 - npx;
-                let src_y = y as f32 - npy;
-                let src_idx = self.get_index(src_x.floor() as isize, src_y.floor() as isize);
+            let fx = (rho_lt - rho_rt) * 0.003;
+            let fy = (rho_up - rho_dn) * 0.003;
 
-                let advected_rho = self.rho[src_idx];
-                let formed_rho = (cr * 0.96) + (target_r * 0.04);
-                let nr = (0.90 * formed_rho + 0.10 * advected_rho).clamp(0.001, 1.0);
+            let pxi = self.px[idx];
+            let pyi = self.py[idx];
+            let drag = 0.995;
+            let npx = pxi * drag + fx;
+            let npy = pyi * drag + fy;
 
-                next_t[idx] = nt;
-                next_tp[idx] = ct;
-                next_r[idx] = nr;
-                next_px[idx] = npx;
-                next_py[idx] = npy;
-            }
+            let src_x = x as f32 - npx;
+            let src_y = y as f32 - npy;
+            let src_idx = self.get_index(src_x.floor() as isize, src_y.floor() as isize);
+
+            let advected_rho = self.rho[src_idx];
+            let formed_rho = (cr * 0.96) + (target_r * 0.04);
+            let nr = (0.90 * formed_rho + 0.10 * advected_rho).clamp(0.001, 1.0);
+
+            // --- SAVE TO NEXT FRAME ---
+            next_u[idx] = nu;          // The calculated new U position
+            next_u_prev[idx] = u_ct;   // Today's U becomes Tomorrow's U-Previous
+            next_v[idx] = nv;          
+            next_v_prev[idx] = v_ct;   
+            next_r[idx] = nr;
+            next_px[idx] = npx;
+            next_py[idx] = npy;
         }
-
-        self.theta_prev = next_tp;
-        self.theta = next_t;
-        self.rho = next_r;
-        self.px = next_px;
-        self.py = next_py;
-        self.charge = self.recompute_charge(&self.theta);
     }
+    
+    // Lock it all in
+    self.u_prev = self.u.clone();
+    self.u = next_u;
+    self.v_prev = self.v.clone();
+    self.v = next_v;
+    self.rho = next_r;
+    self.px = next_px;
+    self.py = next_py;
+}
 }
 
 fn theta_rho_to_color(theta: f32, rho: f32, potential_view: bool) -> u32 {
@@ -286,12 +346,15 @@ fn main() {
 
             if window.is_key_down(Key::H) {
                 let mut rng = rand::thread_rng();
-                for i in 0..universe.theta.len() {
+                for i in 0..universe.u.len() {
                     if universe.rho[i] > 0.1 {
-                        universe.theta[i] += rng.gen_range(-0.1..0.1);
+                        // Shake the vector field directly
+                        universe.u[i] += rng.gen_range(-0.15..0.15);
+                        universe.v[i] += rng.gen_range(-0.15..0.15);
                     }
                 }
-                universe.charge = universe.recompute_charge(&universe.theta);
+                // We don't strictly need to recompute charge here, 
+                // the step function handles it smoothly now!
             }
         }
 
@@ -361,10 +424,13 @@ fn main() {
         let show_charge = window.is_key_down(Key::C);
 
         for i in 0..buffer.len() {
+            // Extract the angle on-the-fly for the renderer
+            let current_theta = universe.v[i].atan2(universe.u[i]);
+            
             buffer[i] = if show_charge {
                 charge_to_color(universe.charge[i], universe.rho[i])
             } else {
-                theta_rho_to_color(universe.theta[i], universe.rho[i], show_potential)
+                theta_rho_to_color(current_theta, universe.rho[i], show_potential)
             };
         }
 
