@@ -10,7 +10,6 @@ const WINDOW_HEIGHT: usize = SIM_HEIGHT * SCALE;
 
 pub struct Universe {
     width: usize, height: usize,
-    theta: Vec<f32>, theta_prev: Vec<f32>,
     rho: Vec<f32>,
     charge: Vec<f32>,
     px: Vec<f32>, py: Vec<f32>,
@@ -35,8 +34,6 @@ impl Universe {
         Self {
             width,
             height,
-            theta: vec![0.0; size],
-            theta_prev: vec![0.0; size],
             rho: vec![0.01; size],
             charge: vec![0.0; size],
             px: vec![0.0; size],
@@ -52,31 +49,6 @@ impl Universe {
         let wx = x.rem_euclid(self.width as isize) as usize;
         let wy = y.rem_euclid(self.height as isize) as usize;
         wy * self.width + wx
-    }
-
-    fn local_charge_from_theta(&self, theta_field: &[f32], x: isize, y: isize) -> f32 {
-        let c = theta_field[self.get_index(x, y)];
-        let r = theta_field[self.get_index(x + 1, y)];
-        let ur = theta_field[self.get_index(x + 1, y - 1)];
-        let u = theta_field[self.get_index(x, y - 1)];
-
-        let d1 = wrap_angle(r - c);
-        let d2 = wrap_angle(ur - r);
-        let d3 = wrap_angle(u - ur);
-        let d4 = wrap_angle(c - u);
-
-        (d1 + d2 + d3 + d4) / (2.0 * PI)
-    }
-
-    fn recompute_charge(&self, theta_field: &[f32]) -> Vec<f32> {
-        let mut next_charge = vec![0.0; self.width * self.height];
-        for y in 0..self.height as isize {
-            for x in 0..self.width as isize {
-                let idx = self.get_index(x, y);
-                next_charge[idx] = self.local_charge_from_theta(theta_field, x, y);
-            }
-        }
-        next_charge
     }
 
     fn recompute_charge_from_uv(&self, u_field: &[f32], v_field: &[f32]) -> Vec<f32> {
@@ -288,7 +260,7 @@ pub fn step(&mut self) {
             let rho_lt = self.rho[self.get_index(x-1, y)];
             let rho_rt = self.rho[self.get_index(x+1, y)];
 
-            let strong_repulsion = 0.6; 
+            let strong_repulsion = 0.0; 
             let core_fx = (rho_lt.powi(3) - rho_rt.powi(3)) * strong_repulsion;
             let core_fy = (rho_up.powi(3) - rho_dn.powi(3)) * strong_repulsion;
 
@@ -335,7 +307,7 @@ pub fn step(&mut self) {
             // --- 3. CLEAN MATTER DECAY (No more Ice-Nine crystals) ---
             let advected_rho = self.rho[src_idx];
             let formed_rho = (cr * 0.96) + (target_r * 0.04);
-        let mut nr = (0.40 * formed_rho + 0.60 * advected_rho).clamp(0.001, 1.0);
+            let mut nr = (0.90 * formed_rho + 0.10 * advected_rho).clamp(0.001, 1.0);
 
             // --- 2. THE TOTAL FREEZE ---
             //if is_frozen {
