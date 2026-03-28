@@ -79,12 +79,12 @@ fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32) {
     let w = self.width as isize;
     let h = self.height as isize;
     
-    let separation = 26.0; 
+    let separation = 18.0; 
     let core_size = 4.0;
 
     // THE KICKSTART: We inject a vertical velocity.
     // A horizontal pair naturally propels itself UP (-Y) across the screen.
-    let vy = -3.0_f32; 
+    let vy = -1.0_f32; 
 
     for y in 0..h {
         for x in 0..w {
@@ -167,7 +167,6 @@ pub fn step(&mut self) {
     let mut next_r = vec![0.0; self.rho.len()];
     let mut next_px = vec![0.0; self.px.len()];
     let mut next_py = vec![0.0; self.py.len()];
-    let mut next_charge = vec![0.0; self.charge.len()];
     
     let base_speed = 0.4;
 
@@ -211,7 +210,7 @@ pub fn step(&mut self) {
             // Squaring `cr` means time flows normally on the edges, 
             // but grinds to a 1% crawl perfectly at the dense core.
             let collision_spike = (phase_variance - 1.2).max(0.0);
-            let local_speed = if is_frozen { 0.0 } else { base_speed };
+            let local_speed = base_speed * (1.0 - 0.15 * cr).clamp(0.85, 1.0);
 
             // --- THE WAVE EQUATION ---
             let lap_u = u_up + u_dn + u_lt + u_rt - (4.0 * u_ct);
@@ -232,8 +231,8 @@ pub fn step(&mut self) {
             nv += v_ct * restoring_force * 0.1;
 
             // Universal friction
-            nu = (nu - u_ct) * 0.999 + u_ct;
-            nv = (nv - v_ct) * 0.999 + v_ct;
+            nu = (nu - u_ct) * 0.997 + u_ct;
+            nv = (nv - v_ct) * 0.997 + v_ct;
 
             // --- KINETIC ENERGY & TOPOLOGY ---
             let diff_up = (u_up - u_ct).powi(2) + (v_up - v_ct).powi(2);
@@ -252,7 +251,7 @@ pub fn step(&mut self) {
 
             // --- 2. VACUUM STRESS ---
             let stress = restoring_force.max(0.0);
-            let target_r = (0.2 * phase_variance + 0.4 * knot_strength + 0.4 * stress).clamp(0.0, 1.0);
+            let target_r = (0.45 * phase_variance + 0.35 * knot_strength + 0.20 * stress).clamp(0.0, 1.0);
 
             // --- YOUR ADVECTION SOLVER (The Strong Force) ---
             let rho_up = self.rho[self.get_index(x, y-1)];
@@ -306,8 +305,8 @@ pub fn step(&mut self) {
 
             // --- 3. CLEAN MATTER DECAY (No more Ice-Nine crystals) ---
             let advected_rho = self.rho[src_idx];
-            let formed_rho = (cr * 0.96) + (target_r * 0.04);
-            let mut nr = (0.90 * formed_rho + 0.10 * advected_rho).clamp(0.001, 1.0);
+            let formed_rho = (cr * 0.92) + (target_r * 0.08);
+            let mut nr = (0.75 * formed_rho + 0.25 * advected_rho).clamp(0.001, 1.0);
 
             // --- 2. THE TOTAL FREEZE ---
             //if is_frozen {
