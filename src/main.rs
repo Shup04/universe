@@ -75,6 +75,110 @@ impl Universe {
         next_charge
     }
 
+    fn amp_at(&self, idx: usize) -> f32 {
+        (self.u[idx] * self.u[idx] + self.v[idx] * self.v[idx]).sqrt()
+    }
+
+    fn local_phase_variance(&self, x: isize, y: isize) -> f32 {
+        let idx = self.get_index(x, y);
+
+        let u_ct = self.u[idx];
+        let v_ct = self.v[idx];
+
+        let u_up = self.u[self.get_index(x, y - 1)];
+        let u_dn = self.u[self.get_index(x, y + 1)];
+        let u_lt = self.u[self.get_index(x - 1, y)];
+        let u_rt = self.u[self.get_index(x + 1, y)];
+
+        let v_up = self.v[self.get_index(x, y - 1)];
+        let v_dn = self.v[self.get_index(x, y + 1)];
+        let v_lt = self.v[self.get_index(x - 1, y)];
+        let v_rt = self.v[self.get_index(x + 1, y)];
+
+        let diff_up = (u_up - u_ct).powi(2) + (v_up - v_ct).powi(2);
+        let diff_dn = (u_dn - u_ct).powi(2) + (v_dn - v_ct).powi(2);
+        let diff_lt = (u_lt - u_ct).powi(2) + (v_lt - v_ct).powi(2);
+        let diff_rt = (u_rt - u_ct).powi(2) + (v_rt - v_ct).powi(2);
+
+        diff_up + diff_dn + diff_lt + diff_rt
+    }
+
+fn local_knot_strength(&self, x: isize, y: isize) -> f32 {
+    let u_up = self.u[self.get_index(x, y - 1)];
+    let u_dn = self.u[self.get_index(x, y + 1)];
+    let u_lt = self.u[self.get_index(x - 1, y)];
+    let u_rt = self.u[self.get_index(x + 1, y)];
+
+    let v_up = self.v[self.get_index(x, y - 1)];
+    let v_dn = self.v[self.get_index(x, y + 1)];
+    let v_lt = self.v[self.get_index(x - 1, y)];
+    let v_rt = self.v[self.get_index(x + 1, y)];
+
+    let du_dx = (u_rt - u_lt) * 0.5;
+    let dv_dy = (v_dn - v_up) * 0.5;
+    let du_dy = (u_dn - u_up) * 0.5;
+    let dv_dx = (v_rt - v_lt) * 0.5;
+
+    let jacobian = du_dx * dv_dy - du_dy * dv_dx;
+    (jacobian * 5.0).abs().min(1.0)
+}
+
+fn local_core_strength(&self, x: isize, y: isize) -> f32 {
+    let idx = self.get_index(x, y);
+    let amp = self.amp_at(idx);
+    let knot = self.local_knot_strength(x, y);
+    let charge = self.charge[idx].abs().min(1.0);
+
+    // core = strong topology + strong charge + low amplitude center
+    (0.45 * knot + 0.45 * charge + 0.10 * (1.0 - amp)).clamp(0.0, 1.0)
+}
+
+fn signed_core_strength(&self, x: isize, y: isize) -> f32 {
+    self.local_core_strength(x, y) * self.charge[self.get_index(x, y)]
+}
+
+fn local_pos_core(&self, x: isize, y: isize) -> f32 {
+    let idx = self.get_index(x, y);
+    let q = self.charge[idx].max(0.0);
+    self.local_core_strength(x, y) * q.min(1.0)
+}
+
+fn local_neg_core(&self, x: isize, y: isize) -> f32 {
+    let idx = self.get_index(x, y);
+    let q = (-self.charge[idx]).max(0.0);
+    self.local_core_strength(x, y) * q.min(1.0)
+}
+
+fn local_pair_overlap(&self, x: isize, y: isize) -> f32 {
+    let mut pos_sum = 0.0;
+    let mut neg_sum = 0.0;
+
+    for dy in -3..=3 {
+        for dx in -3..=3 {
+            let core = self.local_core_strength(x + dx, y + dy);
+            let q = self.charge[self.get_index(x + dx, y + dy)];
+
+            if q > 0.0 {
+                pos_sum += core * q.min(1.0);
+            } else if q < 0.0 {
+                neg_sum += core * (-q).min(1.0);
+            }
+        }
+    }
+
+    (0.05 * pos_sum * neg_sum).min(1.0)
+}
+
+fn local_overlap_pressure(&self, x: isize, y: isize) -> f32 {
+    let idx = self.get_index(x, y);
+    let amp = self.amp_at(idx);
+
+    let phase = (self.local_phase_variance(x, y) * 0.25).min(1.0);
+
+    // rises when the oscillator collapses or gets highly compressed
+    (0.7 * (1.0 - amp).max(0.0) + 0.3 * phase).clamp(0.0, 1.0)
+}
+
 fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32) {
     let w = self.width as isize;
     let h = self.height as isize;
@@ -190,6 +294,17 @@ pub fn step(&mut self) {
             let v_ct = self.v[idx];
             let v_pt = self.v_prev[idx];
 
+            let overlap_up = self.local_overlap_pressure(x, y - 1);
+            let overlap_dn = self.local_overlap_pressure(x, y + 1);
+            let overlap_lt = self.local_overlap_pressure(x - 1, y);
+            let overlap_rt = self.local_overlap_pressure(x + 1, y);
+
+            let overlap_repulsion = 0.06;
+            let core_fx = (overlap_lt.powi(2) - overlap_rt.powi(2)) * overlap_repulsion;
+            let core_fy = (overlap_up.powi(2) - overlap_dn.powi(2)) * overlap_repulsion;
+            let overlap_grad_x = overlap_lt - overlap_rt;
+            let overlap_grad_y = overlap_up - overlap_dn;
+
             let cr = self.rho[idx];
 
             // --- 1. THE EMERGENCY BRAKES (Fixing the Coasting Bug) ---
@@ -230,6 +345,10 @@ pub fn step(&mut self) {
             nu += u_ct * restoring_force * 0.1;
             nv += v_ct * restoring_force * 0.1;
 
+            let core_couple = 0.01;
+            nu += core_couple * overlap_grad_x;
+            nv += core_couple * overlap_grad_y;
+
             // Universal friction
             nu = (nu - u_ct) * 0.997 + u_ct;
             nv = (nv - v_ct) * 0.997 + v_ct;
@@ -259,14 +378,9 @@ pub fn step(&mut self) {
             let rho_lt = self.rho[self.get_index(x-1, y)];
             let rho_rt = self.rho[self.get_index(x+1, y)];
 
-            let strong_repulsion = 0.0; 
-            let core_fx = (rho_lt.powi(3) - rho_rt.powi(3)) * strong_repulsion;
-            let core_fy = (rho_up.powi(3) - rho_dn.powi(3)) * strong_repulsion;
 
-            let fx = (rho_lt - rho_rt) * 0.003 + core_fx;
-            let fy = (rho_up - rho_dn) * 0.003 + core_fy;
-
-            //redo fx and fx to work with charge
+            let rho_fx = (rho_lt - rho_rt) * 0.003;
+            let rho_fy = (rho_up - rho_dn) * 0.003;
 
             let q_up = self.charge[self.get_index(x, y - 1)];
             let q_dn = self.charge[self.get_index(x, y + 1)];
@@ -288,10 +402,10 @@ pub fn step(&mut self) {
                 (q_up.max(0.0) - q_dn.max(0.0)) * bind
             };
 
-            let fx = fx + bind_fx;
-            let fy = fy + bind_fy;
+            let fx = rho_fx + core_fx + bind_fx;
+            let fy = rho_fy + core_fy + bind_fy;
 
-                //-----
+            // End force calc
 
             let pxi = self.px[idx];
             let pyi = self.py[idx];
@@ -368,6 +482,11 @@ fn charge_to_color(charge: f32, rho: f32) -> u32 {
         let g = (40.0 * rho.clamp(0.0, 1.0)) as u32;
         (255 << 24) | (g << 16) | (g << 8) | g
     }
+}
+
+fn core_to_color(core: f32) -> u32 {
+    let c = (255.0 * core.clamp(0.0, 1.0)) as u32;
+    (255 << 24) | (c << 16) | (c << 8) | c
 }
 
 fn main() {
@@ -490,31 +609,90 @@ fn main() {
             .map(|(px, py)| (px * px + py * py).sqrt())
             .sum();
 
+        let max_core = (0..universe.u.len())
+            .map(|i| {
+                let x = (i % SIM_WIDTH) as isize;
+                let y = (i / SIM_WIDTH) as isize;
+                universe.local_core_strength(x, y)
+            })
+            .fold(0.0_f32, f32::max);
+
+        let max_pair_overlap = (0..universe.u.len())
+            .map(|i| {
+                let x = (i % SIM_WIDTH) as isize;
+                let y = (i / SIM_WIDTH) as isize;
+                universe.local_pair_overlap(x, y)
+            })
+            .fold(0.0_f32, f32::max);
+
+        let mut best_pos = (0.0_f32, 0isize, 0isize);
+        let mut best_neg = (0.0_f32, 0isize, 0isize);
+
+        for i in 0..universe.u.len() {
+            let x = (i % SIM_WIDTH) as isize;
+            let y = (i / SIM_WIDTH) as isize;
+
+            let core = universe.local_core_strength(x, y);
+            let q = universe.charge[i];
+
+            if q > 0.0 && core > best_pos.0 {
+                best_pos = (core, x, y);
+            }
+            if q < 0.0 && core > best_neg.0 {
+                best_neg = (core, x, y);
+            }
+        }
+
+        let core_sep = if best_pos.0 > 0.0 && best_neg.0 > 0.0 {
+            let dx = best_pos.1 as f32 - best_neg.1 as f32;
+            let dy = best_pos.2 as f32 - best_neg.2 as f32;
+            (dx * dx + dy * dy).sqrt()
+        } else {
+            0.0
+        };
+
         if peaks.len() == 2 {
             let d = ((peaks[0].0 - peaks[1].0).powi(2) + (peaks[0].1 - peaks[1].1).powi(2)).sqrt();
             window.set_title(&format!(
-                "Dist: {:.4} | Total charge: {:.4} | Total momentum: {:.4}",
-                d, total_charge, total_momentum
+                "Dist: {:.3} | CoreSep: {:.3} | +Core: {:.3} | -Core: {:.3} | Pair Overlap: {:.3} | Charge: {:.3} | Mom: {:.3}",
+                d,
+                core_sep,
+                best_pos.0,
+                best_neg.0,
+                max_pair_overlap,
+                total_charge,
+                total_momentum
             ));
         } else {
             window.set_title(&format!(
-                "Total charge: {:.4} | Total momentum: {:.4}",
-                total_charge, total_momentum
+                "CoreSep: {:.3} | +Core: {:.3} | -Core: {:.3} | Pair Overlap: {:.3} | Charge: {:.3} | Mom: {:.3}",
+                core_sep,
+                best_pos.0,
+                best_neg.0,
+                max_pair_overlap,
+                total_charge,
+                total_momentum
             ));
         }
+
+        let show_core = window.is_key_down(Key::X);
 
         let show_potential = window.is_key_down(Key::P);
         let show_charge = window.is_key_down(Key::C);
 
         for i in 0..buffer.len() {
-            // Extract the angle on-the-fly for the renderer
-            let current_theta = universe.v[i].atan2(universe.u[i]);
-            
-            buffer[i] = if show_charge {
-                charge_to_color(universe.charge[i], universe.rho[i])
+            if show_core {
+                let x = (i % SIM_WIDTH) as isize;
+                let y = (i / SIM_WIDTH) as isize;
+                let core = universe.local_core_strength(x, y);
+                buffer[i] = core_to_color(core);
+            } else if show_charge {
+                let current_theta = universe.v[i].atan2(universe.u[i]);
+                buffer[i] = charge_to_color(universe.charge[i], universe.rho[i]);
             } else {
-                theta_rho_to_color(current_theta, universe.rho[i], show_potential)
-            };
+                let current_theta = universe.v[i].atan2(universe.u[i]);
+                buffer[i] = theta_rho_to_color(current_theta, universe.rho[i], show_potential);
+            }
         }
 
         window
