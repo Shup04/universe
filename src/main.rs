@@ -188,70 +188,83 @@ fn local_overlap_pressure(&self, x: isize, y: isize) -> f32 {
 }
 
 fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32) {
-    let w = self.width as isize;
-    let h = self.height as isize;
-    
-    let lambda = 12.0_f32;
-    let lambda_sq = lambda * lambda;
+        let w = self.width as isize;
+        let h = self.height as isize;
+        
+        let lambda = 12.0_f32;
+        let lambda_sq = lambda * lambda;
 
-    // --- THE QUARANTINE ZONE ---
-    let max_r = 160.0_f32; 
-    let fade_start = 80.0_f32;
+        // --- THE QUARANTINE ZONE ---
+        // Shrunk the footprint so we can fit more particles on screen
+        let max_r = 80.0_f32;  
+        let fade_start = 40.0_f32;
 
-    for y in 0..h {
-        for x in 0..w {
-            let idx = self.get_index(x, y);
+        for y in 0..h {
+            for x in 0..w {
+                let mut dx = x - cx;
+                let mut dy = y - cy;
+                
+                // Torus wrap-around math
+                if dx > w/2 { dx -= w; } else if dx < -w/2 { dx += w; }
+                if dy > h/2 { dy -= h; } else if dy < -h/2 { dy += h; }
+                
+                let fx = dx as f32;
+                let fy = dy as f32;
+                let r_sq = fx * fx + fy * fy;
+                let r = r_sq.sqrt();
 
-            let mut dx = x - cx;
-            let mut dy = y - cy;
-            if dx > w/2 { dx -= w; } else if dx < -w/2 { dx += w; }
-            if dy > h/2 { dy -= h; } else if dy < -h/2 { dy += h; }
-            
-            let fx = dx as f32;
-            let fy = dy as f32;
-            let r_sq = fx * fx + fy * fy;
-            let r = r_sq.sqrt();
+                // THE FIX: Completely skip modifying the grid if we are outside the spawn radius!
+                if r > max_r {
+                    continue; 
+                }
 
-            let theta = sign * fy.atan2(fx);
+                let idx = self.get_index(x, y);
+                let theta = sign * fy.atan2(fx);
 
-            // 1. Calculate the exact Belavin-Polyakov Instanton
-            let denom = lambda_sq + r_sq;
-            let knot_w = (lambda_sq - r_sq) / denom;
-            let uv_mag = (2.0 * lambda * r) / denom;
-            let knot_u = uv_mag * theta.cos();
-            let knot_v = uv_mag * theta.sin();
+                // 1. Calculate the exact Belavin-Polyakov Instanton
+                let denom = lambda_sq + r_sq;
+                let knot_w = (lambda_sq - r_sq) / denom;
+                let uv_mag = (2.0 * lambda * r) / denom;
+                let knot_u = uv_mag * theta.cos();
+                let knot_v = uv_mag * theta.sin();
 
-            // 2. The Isolation Envelope (Flattening the Crease)
-            let mut envelope = 1.0_f32;
-            if r > max_r {
-                envelope = 0.0;
-            } else if r > fade_start {
-                let t = (r - fade_start) / (max_r - fade_start);
-                // The Smoothstep Polynomial
-                envelope = 1.0 - (t * t * (3.0 - 2.0 * t)); 
+                // 2. The Isolation Envelope (Flattening the Crease)
+                let mut envelope = 1.0_f32;
+                if r > fade_start {
+                    let t = (r - fade_start) / (max_r - fade_start);
+                    // The Smoothstep Polynomial
+                    envelope = 1.0 - (t * t * (3.0 - 2.0 * t)); 
+                }
+
+                // 3. THE SUPERPOSITION UPGRADE
+                // Blend with the EXISTING grid state, not just dead vacuum.
+                // This allows multiple fields to overlap smoothly.
+                let bg_u = self.u[idx];
+                let bg_v = self.v[idx];
+                let bg_w = self.w[idx];
+
+                let blended_u = knot_u * envelope + bg_u * (1.0 - envelope);
+                let blended_v = knot_v * envelope + bg_v * (1.0 - envelope);
+                let blended_w = knot_w * envelope + bg_w * (1.0 - envelope);
+
+                // 4. Normalize! (Forces amplitude back to exactly 1.0)
+                let mag = (blended_u.powi(2) + blended_v.powi(2) + blended_w.powi(2)).sqrt();
+                if mag > 1e-6 {
+                    let final_u = blended_u / mag;
+                    let final_v = blended_v / mag;
+                    let final_w = blended_w / mag;
+
+                    // 5. Write the safe geometry to the grid
+                    self.u[idx] = final_u;
+                    self.v[idx] = final_v;
+                    self.w[idx] = final_w;
+                    self.u_prev[idx] = final_u;
+                    self.v_prev[idx] = final_v;
+                    self.w_prev[idx] = final_w;
+                }
             }
-
-            // 3. Blend smoothly with the dead vacuum (0, 0, -1)
-            let blended_u = knot_u * envelope;
-            let blended_v = knot_v * envelope;
-            let blended_w = knot_w * envelope + (-1.0) * (1.0 - envelope);
-
-            // 4. Normalize! (Forces amplitude back to exactly 1.0 to silence the Mexican Hat)
-            let mag = (blended_u.powi(2) + blended_v.powi(2) + blended_w.powi(2)).sqrt();
-            let final_u = blended_u / mag;
-            let final_v = blended_v / mag;
-            let final_w = blended_w / mag;
-
-            // 5. Write the safe geometry to the grid
-            self.u[idx] = final_u;
-            self.v[idx] = final_v;
-            self.w[idx] = final_w;
-            self.u_prev[idx] = final_u;
-            self.v_prev[idx] = final_v;
-            self.w_prev[idx] = final_w;
         }
     }
-}
 
     fn push_nearby(&mut self, cx: isize, cy: isize, push_x: f32, push_y: f32) {
         let radius: isize = 28;
@@ -311,16 +324,16 @@ pub fn step(&mut self) {
             let w_dr = self.w[self.get_index(x+1,y+1)]; let w_dl = self.w[self.get_index(x-1,y+1)];
 
             // Laplacian, force 1, spreading mass.
-            let lap_u = 0.5*(u_rt + u_lt + u_dn + u_up) + 0.25*(u_ur + u_ul + u_dr + u_dl) - 3.0*u_ct;
-            let lap_v = 0.5*(v_rt + v_lt + v_dn + v_up) + 0.25*(v_ur + v_ul + v_dr + v_dl) - 3.0*v_ct;
-            let lap_w = 0.5*(w_rt + w_lt + w_dn + w_up) + 0.25*(w_ur + w_ul + w_dr + w_dl) - 3.0*w_ct;
+            let lap_u = (4.0*(u_rt + u_lt + u_dn + u_up) + 1.0*(u_ur + u_ul + u_dr + u_dl) - 20.0*u_ct) / 6.0;
+            let lap_v = (4.0*(v_rt + v_lt + v_dn + v_up) + 1.0*(v_ur + v_ul + v_dr + v_dl) - 20.0*v_ct) / 6.0;
+            let lap_w = (4.0*(w_rt + w_lt + w_dn + w_up) + 1.0*(w_ur + w_ul + w_dr + w_dl) - 20.0*w_ct) / 6.0;
 
             let mut force_u = lap_u;
             let mut force_v = lap_v;
             let mut force_w = lap_w;
 
             // Vacuum potential, force 2, pull w towards -1 aka vacuum state.
-            let mass_squared = 0.02; 
+            let mass_squared = 0.1; 
             force_w -= mass_squared * (1.0 + w_ct);
 
             // 4. THE SKYRME PRESSURE (Force C)
@@ -333,7 +346,7 @@ pub fn step(&mut self) {
             let cross_v = dw_dx * du_dy - du_dx * dw_dy;
             let cross_w = du_dx * dv_dy - dv_dx * du_dy;
 
-            let skyrme_coupling = 20.0; // up if skyrme shrinks, down if it explodes
+            let skyrme_coupling = 10.0; // up if skyrme shrinks, down if it explodes
             
             force_u += cross_u * skyrme_coupling;
             force_v += cross_v * skyrme_coupling;
@@ -363,7 +376,7 @@ pub fn step(&mut self) {
             next_px[idx] = vx * 0.98;
             next_py[idx] = vy * 0.98;
 
-            let speed = 0.12;
+            let speed = 0.05;
 
             let mut nu = (2.0 * u_ct) - u_pt + (speed * force_u);
             let mut nv = (2.0 * v_ct) - v_pt + (speed * force_v);
