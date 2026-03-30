@@ -314,7 +314,7 @@ pub fn step(&mut self) {
             let mut force_w = lap_w;
 
             // Vacuum potential, force 2, pull w towards -1 aka vacuum state.
-            let mass_squared = 0.05; 
+            let mass_squared = 0.02; 
             force_w -= mass_squared * (1.0 + w_ct);
 
             // 4. THE SKYRME PRESSURE (Force C)
@@ -327,7 +327,7 @@ pub fn step(&mut self) {
             let cross_v = dw_dx * du_dy - du_dx * dw_dy;
             let cross_w = du_dx * dv_dy - dv_dx * du_dy;
 
-            let skyrme_coupling = 8.0; // up if skyrme shrinks, down if it explodes
+            let skyrme_coupling = 20.0; // up if skyrme shrinks, down if it explodes
             
             force_u += cross_u * skyrme_coupling;
             force_v += cross_v * skyrme_coupling;
@@ -457,7 +457,7 @@ fn main() {
 
                 if shift {
                     if is_l {
-                        universe.push_nearby(cx, cy, 0.8, 0.0);
+                        universe.push_nearby(cx, cy, 200.0, 0.0);
                     }
                     if is_r {
                         universe.push_nearby(cx, cy, -0.8, 0.0);
