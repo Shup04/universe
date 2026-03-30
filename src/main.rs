@@ -333,6 +333,22 @@ pub fn step(&mut self) {
             force_v += cross_v * skyrme_coupling;
             force_w += cross_w * skyrme_coupling;
 
+            // advection, for local fluid momentum
+            let vx = self.px[idx];
+            let vy = self.py[idx];
+
+            //advectioj force, then drag
+            let advect_u = -(vx * du_dx + vy * du_dy);
+            let advect_v = -(vx * dv_dx + vy * dv_dy);
+            let advect_w = -(vx * dw_dx + vy * dw_dy);
+            force_u += advect_u * 0.5;
+            force_v += advect_v * 0.5;
+            force_w += advect_w * 0.5;
+
+            //momentum decay
+            next_px[idx] = vx * 0.98;
+            next_py[idx] = vy * 0.98;
+
             let speed = 0.12;
 
             let mut nu = (2.0 * u_ct) - u_pt + (speed * force_u);
@@ -457,7 +473,7 @@ fn main() {
 
                 if shift {
                     if is_l {
-                        universe.push_nearby(cx, cy, 200.0, 0.0);
+                        universe.push_nearby(cx, cy, 0.8, 0.0);
                     }
                     if is_r {
                         universe.push_nearby(cx, cy, -0.8, 0.0);
