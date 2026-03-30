@@ -15,6 +15,7 @@ pub struct Universe {
     px: Vec<f32>, py: Vec<f32>,
     u: Vec<f32>, u_prev: Vec<f32>,
     v: Vec<f32>, v_prev: Vec<f32>,
+    w: Vec<f32>, w_prev: Vec<f32>,
 }
 
 fn wrap_angle(a: f32) -> f32 {
@@ -38,10 +39,9 @@ impl Universe {
             charge: vec![0.0; size],
             px: vec![0.0; size],
             py: vec![0.0; size],
-            u: vec![1.0; size],
-            u_prev: vec![1.0; size],
-            v: vec![0.0; size],
-            v_prev: vec![0.0; size],
+            u: vec![0.0; size], u_prev: vec![0.0; size],
+            v: vec![0.0; size], v_prev: vec![0.0; size],
+            w: vec![-1.0; size], w_prev: vec![-1.0; size],
         }
     }
 
@@ -51,12 +51,20 @@ impl Universe {
         wy * self.width + wx
     }
 
-    fn recompute_charge_from_uv(&self, u_field: &[f32], v_field: &[f32]) -> Vec<f32> {
+fn recompute_charge_from_uv(&self, u_field: &[f32], v_field: &[f32]) -> Vec<f32> {
         let mut next_charge = vec![0.0; self.width * self.height];
 
         for y in 0..self.height as isize {
             for x in 0..self.width as isize {
                 let idx = self.get_index(x, y);
+
+                // --- THE SQUELCH FILTER (Killing the Quantum Foam) ---
+                // If U and V are microscopic, we are in the dead vacuum. 
+                // Skip the atan2 calculation so we don't amplify the static.
+                if u_field[idx].abs() < 0.01 && v_field[idx].abs() < 0.01 {
+                    next_charge[idx] = 0.0;
+                    continue;
+                }
 
                 let c_theta  = v_field[self.get_index(x, y)].atan2(u_field[self.get_index(x, y)]);
                 let r_theta  = v_field[self.get_index(x + 1, y)].atan2(u_field[self.get_index(x + 1, y)]);
@@ -68,7 +76,7 @@ impl Universe {
                 let d3 = wrap_angle(u_theta - ur_theta);
                 let d4 = wrap_angle(c_theta - u_theta);
 
-                next_charge[idx] = (d1 + d2 + d3 + d4) / (2.0 * PI);
+                next_charge[idx] = (d1 + d2 + d3 + d4) / (2.0 * std::f32::consts::PI);
             }
         }
 
@@ -76,29 +84,29 @@ impl Universe {
     }
 
     fn amp_at(&self, idx: usize) -> f32 {
-        (self.u[idx] * self.u[idx] + self.v[idx] * self.v[idx]).sqrt()
+        // Now accurately measures the full 3D sphere
+        (self.u[idx].powi(2) + self.v[idx].powi(2) + self.w[idx].powi(2)).sqrt()
     }
 
-    fn local_phase_variance(&self, x: isize, y: isize) -> f32 {
+fn local_phase_variance(&self, x: isize, y: isize) -> f32 {
         let idx = self.get_index(x, y);
 
-        let u_ct = self.u[idx];
-        let v_ct = self.v[idx];
+        let u_ct = self.u[idx]; let v_ct = self.v[idx]; let w_ct = self.w[idx];
 
-        let u_up = self.u[self.get_index(x, y - 1)];
-        let u_dn = self.u[self.get_index(x, y + 1)];
-        let u_lt = self.u[self.get_index(x - 1, y)];
-        let u_rt = self.u[self.get_index(x + 1, y)];
+        let u_up = self.u[self.get_index(x, y - 1)]; let u_dn = self.u[self.get_index(x, y + 1)];
+        let u_lt = self.u[self.get_index(x - 1, y)]; let u_rt = self.u[self.get_index(x + 1, y)];
 
-        let v_up = self.v[self.get_index(x, y - 1)];
-        let v_dn = self.v[self.get_index(x, y + 1)];
-        let v_lt = self.v[self.get_index(x - 1, y)];
-        let v_rt = self.v[self.get_index(x + 1, y)];
+        let v_up = self.v[self.get_index(x, y - 1)]; let v_dn = self.v[self.get_index(x, y + 1)];
+        let v_lt = self.v[self.get_index(x - 1, y)]; let v_rt = self.v[self.get_index(x + 1, y)];
 
-        let diff_up = (u_up - u_ct).powi(2) + (v_up - v_ct).powi(2);
-        let diff_dn = (u_dn - u_ct).powi(2) + (v_dn - v_ct).powi(2);
-        let diff_lt = (u_lt - u_ct).powi(2) + (v_lt - v_ct).powi(2);
-        let diff_rt = (u_rt - u_ct).powi(2) + (v_rt - v_ct).powi(2);
+        // Gather W for telemetry
+        let w_up = self.w[self.get_index(x, y - 1)]; let w_dn = self.w[self.get_index(x, y + 1)];
+        let w_lt = self.w[self.get_index(x - 1, y)]; let w_rt = self.w[self.get_index(x + 1, y)];
+
+        let diff_up = (u_up - u_ct).powi(2) + (v_up - v_ct).powi(2) + (w_up - w_ct).powi(2);
+        let diff_dn = (u_dn - u_ct).powi(2) + (v_dn - v_ct).powi(2) + (w_dn - w_ct).powi(2);
+        let diff_lt = (u_lt - u_ct).powi(2) + (v_lt - v_ct).powi(2) + (w_lt - w_ct).powi(2);
+        let diff_rt = (u_rt - u_ct).powi(2) + (v_rt - v_ct).powi(2) + (w_rt - w_ct).powi(2);
 
         diff_up + diff_dn + diff_lt + diff_rt
     }
@@ -183,13 +191,12 @@ fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32) {
     let w = self.width as isize;
     let h = self.height as isize;
     
-    // The Soliton Drive configuration
-    let separation = 10.0; 
-    let core_size = 4.0;
+    let lambda = 12.0_f32;
+    let lambda_sq = lambda * lambda;
 
-    // THE KICKSTART: This gives them the momentum to create 
-    // the hydrodynamic pressure wake that stops them from spinning!
-    let vy = -0.5_f32; 
+    // --- THE QUARANTINE ZONE ---
+    let max_r = 160.0_f32; 
+    let fade_start = 80.0_f32;
 
     for y in 0..h {
         for x in 0..w {
@@ -200,49 +207,48 @@ fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32) {
             if dx > w/2 { dx -= w; } else if dx < -w/2 { dx += w; }
             if dy > h/2 { dy -= h; } else if dy < -h/2 { dy += h; }
             
-            // Core 1 (+1)
-            let fx1 = dx as f32 + separation;
-            let fy1 = dy as f32;
-            let r1_sq = fx1 * fx1 + fy1 * fy1;
+            let fx = dx as f32;
+            let fy = dy as f32;
+            let r_sq = fx * fx + fy * fy;
+            let r = r_sq.sqrt();
 
-            // Core 2 (-1)
-            let fx2 = dx as f32 - separation;
-            let fy2 = dy as f32;
-            let r2_sq = fx2 * fx2 + fy2 * fy2;
+            let theta = sign * fy.atan2(fx);
 
-            let amp1 = (r1_sq.sqrt() / core_size).min(1.0);
-            let amp2 = (r2_sq.sqrt() / core_size).min(1.0);
-            let amp = amp1 * amp2;
+            // 1. Calculate the exact Belavin-Polyakov Instanton
+            let denom = lambda_sq + r_sq;
+            let knot_w = (lambda_sq - r_sq) / denom;
+            let uv_mag = (2.0 * lambda * r) / denom;
+            let knot_u = uv_mag * theta.cos();
+            let knot_v = uv_mag * theta.sin();
 
-            let theta1 = 1.0 * fy1.atan2(fx1);
-            let theta2 = -1.0 * fy2.atan2(fx2);
-            let total_theta = theta1 + theta2 + std::f32::consts::PI / 2.0;
+            // 2. The Isolation Envelope (Flattening the Crease)
+            let mut envelope = 1.0_f32;
+            if r > max_r {
+                envelope = 0.0;
+            } else if r > fade_start {
+                let t = (r - fade_start) / (max_r - fade_start);
+                // The Smoothstep Polynomial
+                envelope = 1.0 - (t * t * (3.0 - 2.0 * t)); 
+            }
 
-            let knot_u = amp * total_theta.cos();
-            let knot_v = amp * total_theta.sin();
+            // 3. Blend smoothly with the dead vacuum (0, 0, -1)
+            let blended_u = knot_u * envelope;
+            let blended_v = knot_v * envelope;
+            let blended_w = knot_w * envelope + (-1.0) * (1.0 - envelope);
 
-            // The Time Shift (Applying the forward momentum)
-            let fy1_prev = fy1 - vy; 
-            let fy2_prev = fy2 - vy;
-            let theta1_prev = 1.0 * fy1_prev.atan2(fx1);
-            let theta2_prev = -1.0 * fy2_prev.atan2(fx2);
-            let total_theta_prev = theta1_prev + theta2_prev + std::f32::consts::PI / 2.0;
+            // 4. Normalize! (Forces amplitude back to exactly 1.0 to silence the Mexican Hat)
+            let mag = (blended_u.powi(2) + blended_v.powi(2) + blended_w.powi(2)).sqrt();
+            let final_u = blended_u / mag;
+            let final_v = blended_v / mag;
+            let final_w = blended_w / mag;
 
-            let prev_knot_u = amp * total_theta_prev.cos();
-            let prev_knot_v = amp * total_theta_prev.sin();
-
-            // Superposition onto the vacuum
-            let old_u = self.u[idx];
-            let old_v = self.v[idx];
-            
-            self.u[idx] = old_u * knot_u - old_v * knot_v;
-            self.v[idx] = old_u * knot_v + old_v * knot_u;
-            
-            // Anchor the past frame shifted to prevent the rubber band snap!
-            let old_u_prev = self.u_prev[idx];
-            let old_v_prev = self.v_prev[idx];
-            self.u_prev[idx] = old_u_prev * prev_knot_u - old_v_prev * prev_knot_v;
-            self.v_prev[idx] = old_u_prev * prev_knot_v + old_v_prev * prev_knot_u;
+            // 5. Write the safe geometry to the grid
+            self.u[idx] = final_u;
+            self.v[idx] = final_v;
+            self.w[idx] = final_w;
+            self.u_prev[idx] = final_u;
+            self.v_prev[idx] = final_v;
+            self.w_prev[idx] = final_w;
         }
     }
 }
@@ -267,139 +273,99 @@ fn spawn_vortex(&mut self, cx: isize, cy: isize, sign: f32) {
     }
 
 pub fn step(&mut self) {
-    // 1. Create the empty vectors for the NEXT frame
     let mut next_u = vec![0.0; self.u.len()];
     let mut next_u_prev = vec![0.0; self.u.len()];
     let mut next_v = vec![0.0; self.v.len()];
     let mut next_v_prev = vec![0.0; self.v.len()];
+    let mut next_w = vec![0.0; self.w.len()];
+    let mut next_w_prev = vec![0.0; self.w.len()];
     let mut next_r = vec![0.0; self.rho.len()];
     let mut next_px = vec![0.0; self.px.len()];
     let mut next_py = vec![0.0; self.py.len()];
-    
-    let base_speed = 0.4;
+
+    let base_speed = 0.15;
 
     for y in 0..self.height as isize {
         for x in 0..self.width as isize {
             let idx = self.get_index(x, y);
 
-            // --- GATHER SPATIAL & TIME DATA FOR U ---
-            let u_up = self.u[self.get_index(x, y-1)];
-            let u_dn = self.u[self.get_index(x, y+1)];
-            let u_lt = self.u[self.get_index(x-1, y)];
-            let u_rt = self.u[self.get_index(x+1, y)];
-            let u_ct = self.u[idx];
-            let u_pt = self.u_prev[idx];
+            // 1. Current and Previous State
+            let u_ct = self.u[idx]; let u_pt = self.u_prev[idx];
+            let v_ct = self.v[idx]; let v_pt = self.v_prev[idx];
+            let w_ct = self.w[idx]; let w_pt = self.w_prev[idx];
 
-            // --- GATHER SPATIAL & TIME DATA FOR V ---
-            let v_up = self.v[self.get_index(x, y-1)];
-            let v_dn = self.v[self.get_index(x, y+1)];
-            let v_lt = self.v[self.get_index(x-1, y)];
-            let v_rt = self.v[self.get_index(x+1, y)];
-            let v_ct = self.v[idx];
-            let v_pt = self.v_prev[idx];
-
-            let cr = self.rho[idx];
-
-            // --- 1. TIME DILATION ---
-            let local_speed = base_speed * (1.0 - 0.15 * cr).clamp(0.85, 1.0);
-
-            // --- 2. THE WAVE EQUATION ---
-            let lap_u = u_up + u_dn + u_lt + u_rt - (4.0 * u_ct);
-            let lap_v = v_up + v_dn + v_lt + v_rt - (4.0 * v_ct);
-
-            let mut nu = (2.0 * u_ct) - u_pt + (local_speed * lap_u);
-            let mut nv = (2.0 * v_ct) - v_pt + (local_speed * lap_v);
-
-            // --- 3. THE MEXICAN HAT POTENTIAL ---
-            let amp_sq = u_ct * u_ct + v_ct * v_ct;
-            let restoring_force = 1.0 - amp_sq;
-            nu += u_ct * restoring_force * 0.1;
-            nv += v_ct * restoring_force * 0.1;
-
-            // Universal friction
-            nu = (nu - u_ct) * 0.997 + u_ct;
-            nv = (nv - v_ct) * 0.997 + v_ct;
-
-            // --- 4. KINETIC ENERGY & TOPOLOGY ---
-            let diff_up = (u_up - u_ct).powi(2) + (v_up - v_ct).powi(2);
-            let diff_dn = (u_dn - u_ct).powi(2) + (v_dn - v_ct).powi(2);
-            let diff_lt = (u_lt - u_ct).powi(2) + (v_lt - v_ct).powi(2);
-            let diff_rt = (u_rt - u_ct).powi(2) + (v_rt - v_ct).powi(2);
-            let phase_variance = diff_up + diff_dn + diff_lt + diff_rt;
-
-            let du_dx = (u_rt - u_lt) * 0.5;
-            let dv_dy = (v_dn - v_up) * 0.5; 
-            let du_dy = (u_dn - u_up) * 0.5;
-            let dv_dx = (v_rt - v_lt) * 0.5;
-
-            let jacobian = du_dx * dv_dy - du_dy * dv_dx; 
-            let knot_strength = (jacobian * 5.0).abs().min(1.0);
-
-            let stress = restoring_force.max(0.0);
-            let target_r = (0.45 * phase_variance + 0.35 * knot_strength + 0.20 * stress).clamp(0.0, 1.0);
-
-            // --- 5. THE MACROSCOPIC RADAR (Fixing the Hurricane Eye) ---
-            // By looking 3 pixels away, the dead-center of the core can "see" 
-            // the massive collision front of the other particle and react to it!
-            let rho_up3 = self.rho[self.get_index(x, y-3)];
-            let rho_dn3 = self.rho[self.get_index(x, y+3)];
-            let rho_lt3 = self.rho[self.get_index(x-3, y)];
-            let rho_rt3 = self.rho[self.get_index(x+3, y)];
-
-            // Because rho is naturally damped, this is unconditionally stable. No explosions.
-            let cloud_repulsion = 2.0; 
-            let fx = (rho_lt3.powi(3) - rho_rt3.powi(3)) * cloud_repulsion;
-            let fy = (rho_up3.powi(3) - rho_dn3.powi(3)) * cloud_repulsion;
-
-            let pxi = self.px[idx];
-            let pyi = self.py[idx];
-            let drag = 0.99; // Smooth, stable drag
+            // 2. High-Precision Gradients
+            let u_rt = self.u[self.get_index(x+1,y)]; let u_lt = self.u[self.get_index(x-1,y)];
+            let u_dn = self.u[self.get_index(x,y+1)]; let u_up = self.u[self.get_index(x,y-1)];
             
-            // --- 6. THE GOVERNOR ---
-            let max_speed = 0.5; 
-            let mut npx = (pxi * drag + fx).clamp(-max_speed, max_speed);
-            let mut npy = (pyi * drag + fy).clamp(-max_speed, max_speed);
+            let v_rt = self.v[self.get_index(x+1,y)]; let v_lt = self.v[self.get_index(x-1,y)];
+            let v_dn = self.v[self.get_index(x,y+1)]; let v_up = self.v[self.get_index(x,y-1)];
 
-            // --- 7. THE DRIVE SHAFT ---
-            let advect_u = (npx * du_dx + npy * du_dy).clamp(-0.20, 0.20);
-            let advect_v = (npx * dv_dx + npy * dv_dy).clamp(-0.20, 0.20);
+            let w_rt = self.w[self.get_index(x+1,y)]; let w_lt = self.w[self.get_index(x-1,y)];
+            let w_dn = self.w[self.get_index(x,y+1)]; let w_up = self.w[self.get_index(x,y-1)];
 
-            nu -= advect_u;
-            nv -= advect_v;
+            // Laplacian, force 1, spreading mass.
+            let lap_u = u_rt + u_lt + u_dn + u_up - 4.0*u_ct;
+            let lap_v = v_rt + v_lt + v_dn + v_up - 4.0*v_ct;
+            let lap_w = w_rt + w_lt + w_dn + w_up - 4.0*w_ct;
+
+            let mut force_u = lap_u;
+            let mut force_v = lap_v;
+            let mut force_w = lap_w;
+
+            // Vacuum potential, force 2, pull w towards -1 aka vacuum state.
+            let mass_squared = 0.05; 
+            force_w -= mass_squared * (1.0 + w_ct);
+
+            // 4. THE SKYRME PRESSURE (Force C)
+            // Calculate the spatial gradients
+            let du_dx = (u_rt - u_lt) * 0.5; let du_dy = (u_dn - u_up) * 0.5;
+            let dv_dx = (v_rt - v_lt) * 0.5; let dv_dy = (v_dn - v_up) * 0.5;
+            let dw_dx = (w_rt - w_lt) * 0.5; let dw_dy = (w_dn - w_up) * 0.5;
+
+            let cross_u = dv_dx * dw_dy - dw_dx * dv_dy;
+            let cross_v = dw_dx * du_dy - du_dx * dw_dy;
+            let cross_w = du_dx * dv_dy - dv_dx * du_dy;
+
+            let skyrme_coupling = 8.0; // up if skyrme shrinks, down if it explodes
             
-            let out_u_prev = u_ct - advect_u;
-            let out_v_prev = v_ct - advect_v;
+            force_u += cross_u * skyrme_coupling;
+            force_v += cross_v * skyrme_coupling;
+            force_w += cross_w * skyrme_coupling;
 
-            let src_x = x as f32 - npx;
-            let src_y = y as f32 - npy;
-            let src_idx = self.get_index(src_x.floor() as isize, src_y.floor() as isize);
+            let speed = 0.12;
 
-            // --- 8. CLEAN MATTER DECAY ---
-            let advected_rho = self.rho[src_idx];
-            let formed_rho = (cr * 0.94) + (target_r * 0.04);
-            let nr = (0.82 * formed_rho + 0.18 * advected_rho).clamp(0.001, 1.0);
+            let mut nu = (2.0 * u_ct) - u_pt + (speed * force_u);
+            let mut nv = (2.0 * v_ct) - v_pt + (speed * force_v);
+            let mut nw = (2.0 * w_ct) - w_pt + (speed * force_w);
 
-            // --- 9. SAVE TO NEXT FRAME ---
-            next_u[idx] = nu;          
-            next_u_prev[idx] = out_u_prev;
-            next_v[idx] = nv;          
-            next_v_prev[idx] = out_v_prev; 
-            next_r[idx] = nr;
-            next_px[idx] = npx;
-            next_py[idx] = npy;
-        } // End of x loop
-    } // End of y loop
-    
-    // Lock it all in
-    let new_charge = self.recompute_charge_from_uv(&next_u, &next_v);
-    self.u_prev = next_u_prev;
-    self.u = next_u;
-    self.v_prev = next_v_prev;
-    self.v = next_v;
+            // 6. Hard Geometric Projection (Normalization)
+            let mag = (nu*nu + nv*nv + nw*nw).sqrt();
+            if mag > 1e-6 {
+                nu /= mag; nv /= mag; nw /= mag;
+            }
+
+            // 7. Friction (Critical for long-term stability)
+            // This "cools" the system so it settles into its ground state.
+            let friction = 0.9995;
+            nu = (nu - u_ct) * friction + u_ct;
+            nv = (nv - v_ct) * friction + v_ct;
+            nw = (nw - w_ct) * friction + w_ct;
+
+            // 8. Final Save
+            next_u[idx] = nu; next_v[idx] = nv; next_w[idx] = nw;
+            next_u_prev[idx] = u_ct; next_v_prev[idx] = v_ct; next_w_prev[idx] = w_ct;
+            
+            // Matter visualization (Knot strength)
+            let jacobian = (du_dx * dv_dy - du_dy * dv_dx).abs();
+            next_r[idx] = (jacobian * 15.0).clamp(0.0, 1.0);
+        }
+    }
+    self.u = next_u; self.u_prev = next_u_prev;
+    self.v = next_v; self.v_prev = next_v_prev;
+    self.w = next_w; self.w_prev = next_w_prev;
     self.rho = next_r;
-    self.px = next_px;
-    self.py = next_py;
-    self.charge = new_charge;
+    self.charge = self.recompute_charge_from_uv(&self.u, &self.v);
 }
 }
 
@@ -437,6 +403,21 @@ fn charge_to_color(charge: f32, rho: f32) -> u32 {
 fn core_to_color(core: f32) -> u32 {
     let c = (255.0 * core.clamp(0.0, 1.0)) as u32;
     (255 << 24) | (c << 16) | (c << 8) | c
+}
+
+fn skyrmion_color(u: f32, v: f32, w: f32) -> u32 {
+    // Phase dictates the color (the U/V equator twist)
+    let theta = v.atan2(u);
+    
+    // W dictates the brightness! 
+    // Vacuum (W=-1) becomes 0.0 (Black). Core (W=1) becomes 1.0 (Bright).
+    let brightness = (w * 0.5 + 0.5).clamp(0.0, 1.0);
+
+    let red = ((theta.sin() * 0.5 + 0.5) * 255.0 * brightness) as u32;
+    let grn = (((theta + 2.0).sin() * 0.5 + 0.5) * 255.0 * brightness) as u32;
+    let blu = (((theta + 4.0).sin() * 0.5 + 0.5) * 255.0 * brightness) as u32;
+
+    (255 << 24) | (red << 16) | (grn << 8) | blu
 }
 
 fn main() {
@@ -547,7 +528,7 @@ if refresh_stats && !window.is_key_down(Key::T) {
                         sy += (py + dy) as f32 * v;
                         total += v;
                         search_rho[idx] = 0.0;
-                    }big news recently
+                    }
                 }
             }
 
@@ -663,8 +644,8 @@ window.set_title(&last_title);
             } else if show_charge {
                 buffer[i] = charge_to_color(universe.charge[i], universe.rho[i]);
             } else {
-                let current_theta = universe.v[i].atan2(universe.u[i]);
-                buffer[i] = theta_rho_to_color(current_theta, universe.rho[i], show_potential);
+                // Render the true 3D Skyrmion!
+                buffer[i] = skyrmion_color(universe.u[i], universe.v[i], universe.w[i]);
             }
         }
         window
