@@ -297,17 +297,23 @@ pub fn step(&mut self) {
             // 2. High-Precision Gradients
             let u_rt = self.u[self.get_index(x+1,y)]; let u_lt = self.u[self.get_index(x-1,y)];
             let u_dn = self.u[self.get_index(x,y+1)]; let u_up = self.u[self.get_index(x,y-1)];
+            let u_ur = self.u[self.get_index(x+1,y-1)]; let u_ul = self.u[self.get_index(x-1,y-1)];
+            let u_dr = self.u[self.get_index(x+1,y+1)]; let u_dl = self.u[self.get_index(x-1,y+1)];
             
             let v_rt = self.v[self.get_index(x+1,y)]; let v_lt = self.v[self.get_index(x-1,y)];
             let v_dn = self.v[self.get_index(x,y+1)]; let v_up = self.v[self.get_index(x,y-1)];
+            let v_ur = self.v[self.get_index(x+1,y-1)]; let v_ul = self.v[self.get_index(x-1,y-1)];
+            let v_dr = self.v[self.get_index(x+1,y+1)]; let v_dl = self.v[self.get_index(x-1,y+1)];
 
             let w_rt = self.w[self.get_index(x+1,y)]; let w_lt = self.w[self.get_index(x-1,y)];
             let w_dn = self.w[self.get_index(x,y+1)]; let w_up = self.w[self.get_index(x,y-1)];
+            let w_ur = self.w[self.get_index(x+1,y-1)]; let w_ul = self.w[self.get_index(x-1,y-1)];
+            let w_dr = self.w[self.get_index(x+1,y+1)]; let w_dl = self.w[self.get_index(x-1,y+1)];
 
             // Laplacian, force 1, spreading mass.
-            let lap_u = u_rt + u_lt + u_dn + u_up - 4.0*u_ct;
-            let lap_v = v_rt + v_lt + v_dn + v_up - 4.0*v_ct;
-            let lap_w = w_rt + w_lt + w_dn + w_up - 4.0*w_ct;
+            let lap_u = 0.5*(u_rt + u_lt + u_dn + u_up) + 0.25*(u_ur + u_ul + u_dr + u_dl) - 3.0*u_ct;
+            let lap_v = 0.5*(v_rt + v_lt + v_dn + v_up) + 0.25*(v_ur + v_ul + v_dr + v_dl) - 3.0*v_ct;
+            let lap_w = 0.5*(w_rt + w_lt + w_dn + w_up) + 0.25*(w_ur + w_ul + w_dr + w_dl) - 3.0*w_ct;
 
             let mut force_u = lap_u;
             let mut force_v = lap_v;
@@ -334,8 +340,16 @@ pub fn step(&mut self) {
             force_w += cross_w * skyrme_coupling;
 
             // advection, for local fluid momentum
-            let vx = self.px[idx];
-            let vy = self.py[idx];
+            let mut vx = self.px[idx];
+            let mut vy = self.py[idx];
+
+            // speed of time limiter
+            let max_v = 0.45; 
+            let v_mag = (vx * vx + vy * vy).sqrt();
+            if v_mag > max_v {
+                vx = (vx / v_mag) * max_v;
+                vy = (vy / v_mag) * max_v;
+            }
 
             //advectioj force, then drag
             let advect_u = -(vx * du_dx + vy * du_dy);
@@ -493,7 +507,7 @@ fn main() {
 
         last_m = is_l || is_r;
 
-        let steps = if window.is_key_down(Key::T) { 100 } else { 1 };
+        let steps = if window.is_key_down(Key::T) { 100 } else { 5 };
 
         for _ in 0..steps {
             universe.step();
