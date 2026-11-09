@@ -69,7 +69,8 @@ them from compilation. After dependencies/index metadata are cached, add
 `matter`, `potential`, `charge`, `core` and `momentum`; use a PPM-capable viewer.
 It writes only generated data to the chosen output directory.
 
-Seven tests cover periodic indexing, independently calculated uniform-field
+Eight tests cover periodic indexing and spawn centers (including signed integer
+extremes), independently calculated uniform-field
 density decay, signed charge recomputation, full reset, reversed current and
 previous spawn orientation, positive dimensions, and a deterministic 200-step
 run with finite fields and all five diagnostic buffers. The repeated run is
@@ -78,7 +79,7 @@ promised. Tests do not establish long-term stability or physical validity.
 
 Verified on 2026-11-06 with Linux x86-64, Rust/Cargo 1.94.0:
 
-- `cargo test --locked --offline --no-default-features`: **7 passed**.
+- `cargo test --locked --offline --no-default-features`: **8 passed**.
 - `cargo build --release --locked --offline`: **passed**, including the GUI.
 - The headless capture command: five 160×120 frames generated and visually
   inspected; repeated captures matched byte for byte.

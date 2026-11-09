@@ -156,6 +156,10 @@ impl Universe {
         assert!(sign == 1.0 || sign == -1.0, "orientation must be +1 or -1");
         let w = self.width as isize;
         let h = self.height as isize;
+        // Match periodic indexing for any signed center, including extreme
+        // coordinates, before subtracting to avoid overflow or one-wrap errors.
+        let cx = cx.rem_euclid(w);
+        let cy = cy.rem_euclid(h);
 
         // The Soliton Drive configuration
         let separation = 10.0;
@@ -475,6 +479,17 @@ mod tests {
             for x in -14..14 {
                 assert_eq!(sim.get_index(x, y), sim.get_index(x + 21, y - 15));
             }
+        }
+    }
+
+    #[test]
+    fn spawn_coordinates_wrap_like_periodic_indices() {
+        for (x, y) in [(48 + 3 * 96, 40 - 4 * 80), (isize::MIN, isize::MAX)] {
+            let mut wrapped = Universe::new(96, 80);
+            let mut outside = wrapped.clone();
+            wrapped.spawn_vortex(x.rem_euclid(96), y.rem_euclid(80), 1.0);
+            outside.spawn_vortex(x, y, 1.0);
+            assert_eq!(outside, wrapped);
         }
     }
 
